@@ -67,7 +67,7 @@ def test_user_agent_suffix_is_appended() -> None:
         assert client.user_agent == f"GoPay Python v4 {__version__} MyShop/2.1"
 
 
-@pytest.mark.parametrize("suffix", ["", "  ", "Shop\r\nX-Injected: 1"])
+@pytest.mark.parametrize("suffix", ["", "  ", "Shop\r\nX-Injected: 1", "Obchod/č", "Shop\t1"])
 def test_user_agent_suffix_rejects_unsafe_values(errors: ErrorLog, suffix: str) -> None:
     config_error(errors, user_agent_suffix=suffix)
 

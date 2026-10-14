@@ -94,14 +94,29 @@ class ErrorLog:
         self.errors.append(error)
 
 
-@pytest.fixture(autouse=True)
-def instant_polling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pollers pause at least a second between polls; tests should not."""
+class PollClock:
+    """Simulated time for the pollers: a pause advances it instead of sleeping."""
 
-    def pause(_seconds: float, cancel: Optional[threading.Event]) -> bool:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.pauses: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def pause(self, seconds: float, cancel: Optional[threading.Event]) -> bool:
+        self.pauses.append(seconds)
+        self.now += max(0.0, seconds)
         return cancel is not None and cancel.is_set()
 
-    monkeypatch.setattr(_polling, "_pause", pause)
+
+@pytest.fixture(autouse=True)
+def poll_clock(monkeypatch: pytest.MonkeyPatch) -> PollClock:
+    """Pollers pause at least a second between polls; tests run on simulated time."""
+    clock = PollClock()
+    monkeypatch.setattr(_polling, "_clock", clock)
+    monkeypatch.setattr(_polling, "_pause", clock.pause)
+    return clock
 
 
 @pytest.fixture

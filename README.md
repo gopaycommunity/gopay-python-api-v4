@@ -286,9 +286,9 @@ except GoPayHTTPError as error:
         ...  # the payment is no longer CREATED
 ```
 
-Requests that are safe to repeat (`GET`, `DELETE`) are retried twice on a `5xx` or a dropped
-connection. A `POST` is never retried: a charge or refund that reached the API must not be sent
-twice.
+Reads (`GET`) are retried twice on a `5xx` or a dropped connection. Nothing that changes state
+is retried: a charge or refund that reached the API must not be sent twice, and a cancel the API
+already carried out would answer a repeat with `409`.
 
 ## Monitoring
 

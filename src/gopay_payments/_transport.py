@@ -26,11 +26,13 @@ ACCEPT = "application/json"
 REFRESH_MARGIN_SECONDS = 30.0
 
 # Retries are for failures the request itself did not cause — a 5xx or a dropped
-# connection — and only for methods that are safe to repeat. A POST is never retried:
-# a charge or a refund that reached the API must not be sent twice.
+# connection — and only for reads. A POST is never retried: a charge or a refund that
+# reached the API must not be sent twice. Nor is a DELETE: cancel, stop and disable answer
+# 409 to a repeat, so retrying one the API had already carried out would turn its success
+# into an error.
 MAX_RETRIES = 2
 RETRY_BASE_DELAY_SECONDS = 0.2
-IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+RETRIED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # Set by the transport alone. Per-request headers cannot replace them.
 RESERVED_HEADERS = frozenset({"accept", "authorization", "content-type", "user-agent"})
@@ -200,7 +202,12 @@ class Transport:
             try:
                 return self._fetch_token(credentials).access_token
             except GoPayError as cause:
-                self._forget(credentials)
+                # Only a refusal of the credentials themselves is worth forgetting them
+                # for. A timeout, a dropped connection or a 5xx says nothing about them,
+                # and forgetting them would leave a long-running worker unable to recover
+                # until someone calls authenticate() again.
+                if _is_permanent_rejection(cause):
+                    self._forget(credentials)
                 raise GoPaySDKError(
                     "[GoPaySDK] Token refresh failed. Call authenticate() again.",
                     error_code=ErrorCode.AUTH_REFRESH_FAILED,
@@ -250,9 +257,10 @@ class Transport:
                 retry=False,
             )
             if response.status_code == 401:
-                credentials = self._credentials
-                if credentials is not None:
-                    self._forget(credentials)
+                # The credentials stay: the fresh token they produced was rejected by this
+                # endpoint, which says nothing about the others. The token goes, so the
+                # next call starts from a new one.
+                self._discard(token)
                 raise GoPaySDKError(
                     "[GoPaySDK] Request unauthorized after token refresh. Check OAuth2 scopes.",
                     error_code=ErrorCode.AUTH_UNAUTHORIZED,
@@ -292,7 +300,7 @@ class Transport:
         retry: bool = True,
     ) -> httpx.Response:
         url = self.base_url + path
-        attempts = 1 + (MAX_RETRIES if retry and method in IDEMPOTENT_METHODS else 0)
+        attempts = 1 + (MAX_RETRIES if retry and method in RETRIED_METHODS else 0)
         last_error: Optional[Exception] = None
         for attempt in range(attempts):
             if attempt:
@@ -333,8 +341,20 @@ def _json(response: httpx.Response) -> Any:
         ) from error
 
 
+def _is_permanent_rejection(error: GoPayError) -> bool:
+    """Whether the token endpoint turned the credentials down, rather than failing for now."""
+    return (
+        isinstance(error, GoPayHTTPError)
+        and 400 <= error.status < 500
+        and error.status not in (408, 429)
+    )
+
+
 def _error_body(response: httpx.Response) -> Any:
-    if "application/json" in response.headers.get("content-type", ""):
+    # application/json, and the +json types an intermediary may answer with
+    # (application/problem+json).
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type == "application/json" or content_type.endswith("+json"):
         try:
             return response.json()
         except ValueError:

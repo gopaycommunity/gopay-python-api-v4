@@ -7,7 +7,7 @@ import pytest
 
 from gopay_payments import ErrorCode, GoPayClient, GoPayHTTPError, GoPaySDKError
 
-from .conftest import ErrorLog, FakeGateway, reply
+from .conftest import ErrorLog, FakeGateway, PollClock, reply
 
 CHARGE = "/payments/42/charge"
 
@@ -120,6 +120,9 @@ def test_a_failing_poll_ends_polling_with_its_error(
         {"interval": 0.5},
         {"initial_timeout": "30"},
         {"interval": True},
+        {"interval": float("nan")},
+        {"interval": float("inf")},
+        {"initial_timeout": float("nan")},
     ],
 )
 def test_polling_arguments_are_validated(client: GoPayClient, bad: dict[str, Any]) -> None:
@@ -202,3 +205,60 @@ def test_custom_recurrence_terminal_states_skip_the_reachability_check(
     gateway.on("GET", "/recurrences/rec-1", reply(200, {"id": "rec-1", "state": "NEW"}))
     result = client.await_recurrence_state("rec-1", terminal_states=["NEW"], interval=1)
     assert result["state"] == "NEW"
+
+
+def test_charge_deadline_falls_between_polls(
+    client: GoPayClient, gateway: FakeGateway, poll_clock: PollClock
+) -> None:
+    gateway.on("GET", CHARGE, charge("PROCESSING"))
+    with pytest.raises(GoPaySDKError) as caught:
+        client.await_charge_state("42", interval=2, initial_timeout=5)
+    assert caught.value.error_code is ErrorCode.CHARGE_TIMEOUT
+    # Polls at t=0, 2, 4; the last pause is cut to the remaining second.
+    assert poll_clock.pauses == [2, 2, 1]
+    assert len(gateway.api_requests()) == 3
+
+
+def test_action_required_mid_wait_lifts_the_deadline(
+    client: GoPayClient, gateway: FakeGateway, poll_clock: PollClock
+) -> None:
+    gateway.on(
+        "GET",
+        CHARGE,
+        charge("PROCESSING"),
+        charge("PROCESSING"),
+        charge("ACTION_REQUIRED", "https://acs.example/a"),
+        charge("ACTION_REQUIRED", "https://acs.example/a"),
+        charge("ACTION_REQUIRED", "https://acs.example/a"),
+        charge("SUCCEEDED"),
+    )
+    result = client.await_charge_state("42", interval=2, initial_timeout=5)
+    assert result["state"] == "SUCCEEDED"
+    assert poll_clock.now - 1000.0 > 5  # ran past the initial timeout
+
+
+def test_status_timeout_falls_between_polls(
+    client: GoPayClient, gateway: FakeGateway, poll_clock: PollClock
+) -> None:
+    gateway.on("GET", "/payments/42", reply(200, {"id": 42, "state": "CREATED"}))
+    with pytest.raises(GoPaySDKError) as caught:
+        client.await_payment_status("42", interval=3, timeout=7)
+    assert caught.value.error_code is ErrorCode.CHARGE_TIMEOUT
+    assert poll_clock.pauses == [3, 3, 1]
+
+
+@pytest.mark.parametrize("states", ["PAID", ["PAID", 1]])
+def test_terminal_states_must_be_a_collection_of_strings(
+    client: GoPayClient, gateway: FakeGateway, states: Any
+) -> None:
+    with pytest.raises(GoPaySDKError) as caught:
+        client.await_payment_status("42", terminal_states=states)
+    assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT
+    assert gateway.api_requests() == []
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), -1])
+def test_timeouts_must_be_finite(client: GoPayClient, timeout: float) -> None:
+    with pytest.raises(GoPaySDKError) as caught:
+        client.await_refund_state("r-1", timeout=timeout)
+    assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT

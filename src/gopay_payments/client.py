@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import math
 import threading
 from collections.abc import Collection
 from typing import Any, Callable, Optional, TypeVar, Union, cast
@@ -400,7 +401,7 @@ class GoPayClient:
         return _polling.await_state(
             lambda: cast(PaymentDetails, self._transport.request("GET", f"/payments/{pid}")),
             what="Payment",
-            terminal_states=PAYMENT_TERMINAL_STATES if terminal_states is None else terminal_states,
+            terminal_states=_terminal(terminal_states, PAYMENT_TERMINAL_STATES),
             interval=_interval(interval),
             timeout=None if timeout is None else _seconds(timeout, "timeout"),
             on_state_change=on_state_change,
@@ -455,7 +456,7 @@ class GoPayClient:
         return _polling.await_state(
             lambda: cast(RefundDetails, self._transport.request("GET", f"/refunds/{rid}")),
             what="Refund",
-            terminal_states=REFUND_TERMINAL_STATES if terminal_states is None else terminal_states,
+            terminal_states=_terminal(terminal_states, REFUND_TERMINAL_STATES),
             interval=_interval(interval),
             timeout=None if timeout is None else _seconds(timeout, "timeout"),
             on_state_change=on_state_change,
@@ -622,9 +623,7 @@ class GoPayClient:
         return _polling.await_state(
             poll,
             what="Recurrence",
-            terminal_states=RECURRENCE_TERMINAL_STATES
-            if terminal_states is None
-            else terminal_states,
+            terminal_states=_terminal(terminal_states, RECURRENCE_TERMINAL_STATES),
             interval=_interval(interval),
             timeout=None if timeout is None else _seconds(timeout, "timeout"),
             on_state_change=on_state_change,
@@ -648,8 +647,26 @@ def _interval(value: Any) -> float:
     return seconds
 
 
+def _terminal(states: Optional[Collection[str]], default: Collection[str]) -> Collection[str]:
+    if states is None:
+        return default
+    # A bare string is a Collection[str] too, of its characters: "PAID" would wait for
+    # "P", "A", "I" or "D" and never end.
+    if isinstance(states, str) or not all(isinstance(state, str) for state in states):
+        raise GoPaySDKError(
+            '[GoPaySDK] terminal_states must be a collection of states, e.g. ["PAID"]',
+            error_code=ErrorCode.INVALID_ARGUMENT,
+        )
+    return states
+
+
 def _seconds(value: Any, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
         raise GoPaySDKError(
             f"[GoPaySDK] {field} must be a non-negative number of seconds",
             error_code=ErrorCode.INVALID_ARGUMENT,

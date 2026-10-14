@@ -98,8 +98,14 @@ source.
 - **Polling interval floor is 1 s.** The API asks to be polled about once a second; an
   `interval=0` once hammered the sandbox in a tight loop. Unit tests stub `_polling._pause`
   instead of lowering the floor.
-- **POST is never retried**, only idempotent methods on 5xx or a dropped connection, and a
-  timeout is never retried (the request may still be running).
+- **Only reads are retried** (GET/HEAD/OPTIONS, on 5xx or a dropped connection). Not POST — a
+  charge must not go out twice — and not DELETE: cancel, stop and disable answer `409` to a
+  repeat, so retrying one the API already did turns its success into an error (JS does retry
+  DELETE; Python deliberately does not). A timeout is never retried.
+- **A failed token refresh forgets the credentials only when the token endpoint refused them**
+  (4xx other than 408/429). A timeout or 5xx keeps them, so a long-running worker recovers on
+  the next call. A second 401 on one endpoint drops the token, not the credentials. Both differ
+  from the JS server SDK, which clears everything.
 - **A POST without a body still sends `Content-Type: application/json`** — the gateway
   answers 415 otherwise (`start_recurrence()` / `create_next_payment()` without overrides).
 - **Path segments** are percent-encoded with `quote(..., safe="")` and `.`/`..` are refused —

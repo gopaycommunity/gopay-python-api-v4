@@ -5,7 +5,16 @@ hyphens (``Payment-Create-Request`` → :class:`PaymentCreateRequest`). They exi
 checkers and editors: at runtime every value is a plain ``dict``.
 """
 
+import typing
+
+import typing_extensions
+
 from . import _generated
 from ._generated import *  # noqa: F403
 
-__all__ = [name for name in vars(_generated) if name[:1].isupper()]
+# The generated module's own names, without the typing helpers it imports.
+__all__ = [
+    name
+    for name in vars(_generated)
+    if name[:1].isupper() and not hasattr(typing, name) and not hasattr(typing_extensions, name)
+]

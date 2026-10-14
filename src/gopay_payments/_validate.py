@@ -40,6 +40,13 @@ def require_https_origin(origin: Any, field: str) -> str:
         raise GoPaySDKError(
             f"[GoPaySDK] {field} must be a string", error_code=ErrorCode.INVALID_ARGUMENT
         )
+    # Checked on the raw string: urlsplit silently drops tabs and line breaks, so a value
+    # carrying them would otherwise pass and fail later as a header error.
+    if not _HEADER_SAFE.fullmatch(origin):
+        raise GoPaySDKError(
+            f"[GoPaySDK] {field} must contain printable ASCII only",
+            error_code=ErrorCode.INVALID_ARGUMENT,
+        )
     parts = urlsplit(origin)
     if (
         parts.scheme != "https"
@@ -57,14 +64,15 @@ def require_https_origin(origin: Any, field: str) -> str:
     return origin
 
 
-_HEADER_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
+# Printable ASCII: what an HTTP header value can carry without httpx refusing to encode it.
+_HEADER_SAFE = re.compile(r"[\x20-\x7e]+")
 
 
 def require_header_value(value: Any, field: str) -> str:
     """Return ``value`` if it can go into an HTTP header verbatim."""
-    if not isinstance(value, str) or not value.strip() or _HEADER_UNSAFE.search(value):
+    if not isinstance(value, str) or not value.strip() or not _HEADER_SAFE.fullmatch(value):
         raise GoPaySDKError(
-            f"[GoPaySDK] {field} must be a non-empty string without control characters",
+            f"[GoPaySDK] {field} must be a non-empty string of printable ASCII characters",
             error_code=ErrorCode.INVALID_CONFIG,
         )
     return value.strip()

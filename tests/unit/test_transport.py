@@ -199,3 +199,27 @@ def test_each_error_is_reported_once(
             client.get_payment_status("1")
     assert len(errors.errors) == 2
     assert errors.errors[0] is not errors.errors[1]
+
+
+def test_delete_is_not_retried(client: GoPayClient, gateway: FakeGateway) -> None:
+    # A cancel the API carried out before the 502 would answer 409 to a retry.
+    gateway.on("DELETE", "/payments/1", reply(502))
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.cancel_payment("1")
+    assert caught.value.status == 502
+    assert len(gateway.api_requests()) == 1
+
+
+def test_problem_json_error_body_is_parsed(client: GoPayClient, gateway: FakeGateway) -> None:
+    gateway.on(
+        "GET",
+        "/payments/1",
+        httpx.Response(
+            400,
+            content=b'{"title": "Bad"}',
+            headers={"content-type": "application/problem+json; charset=utf-8"},
+        ),
+    )
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.body == {"title": "Bad"}

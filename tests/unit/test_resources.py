@@ -215,6 +215,8 @@ def test_apple_pay_validation_sends_the_origin(client: GoPayClient, gateway: Fak
         "https://shop.example/checkout",
         "shop.example",
         "https://u@shop.example",
+        "https://shop.example\r\nX-Injected: 1",
+        "https://obchod.cz\u00e9",
     ],
 )
 def test_apple_pay_origin_must_be_a_bare_https_origin(

@@ -148,16 +148,19 @@ def test_a_401_refreshes_the_token_and_retries_once(
     assert second.headers["authorization"] == "Bearer token-2"
 
 
-def test_a_second_401_raises_and_forgets_the_credentials(
+def test_a_second_401_raises_but_keeps_the_credentials(
     client: GoPayClient, gateway: FakeGateway, errors: ErrorLog
 ) -> None:
-    gateway.on("GET", "/payments/1", reply(401))
+    gateway.on("GET", "/cards/tokens/c-1", reply(401))
+    gateway.on("GET", "/payments/1", reply(200, {"id": 1}))
     with pytest.raises(GoPaySDKError) as caught:
-        client.get_payment_status("1")
+        client.get_card_details("c-1")
     assert caught.value.error_code is ErrorCode.AUTH_UNAUTHORIZED
     assert errors.errors == [caught.value]
     assert len(gateway.api_requests()) == 2
-    assert not client.is_authenticated()
+    # One endpoint refusing a fresh token says nothing about the others.
+    assert client.get_payment_status("1")["id"] == 1  # type: ignore[comparison-overlap]
+    assert gateway.last().headers["authorization"] == "Bearer token-3"
 
 
 def test_a_failed_refresh_raises_auth_refresh_failed(
@@ -233,3 +236,33 @@ def test_browser_keys_need_shareable_key_and_authentication(
     unauthenticated.set_shareable_key("other")
     unauthenticated.authenticate("client-id", "client-secret", SCOPE)
     assert unauthenticated.get_browser_keys()["shareable_key"] == "other"
+
+
+def test_a_transient_refresh_failure_keeps_the_credentials(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    gateway.on("GET", "/payments/1", reply(200, {"id": 1}))
+    gateway.on(
+        "POST",
+        TOKEN_PATH,
+        reply(503),
+        reply(200, {"access_token": "recovered", "expires_in": 900}),
+    )
+    client._transport._clock = lambda: time.time() + 880  # the token needs replacing
+    with pytest.raises(GoPaySDKError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.error_code is ErrorCode.AUTH_REFRESH_FAILED
+    client.get_payment_status("1")
+    assert gateway.last().headers["authorization"] == "Bearer recovered"
+
+
+def test_rejected_credentials_on_refresh_are_forgotten(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    gateway.on("POST", TOKEN_PATH, reply(401))
+    client._transport._clock = lambda: time.time() + 880
+    with pytest.raises(GoPaySDKError):
+        client.get_payment_status("1")
+    with pytest.raises(GoPaySDKError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.error_code is ErrorCode.AUTH_TOKEN_MISSING

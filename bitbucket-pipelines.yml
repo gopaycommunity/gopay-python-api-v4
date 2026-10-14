@@ -74,7 +74,9 @@ definitions:
         clone:
           depth: full
         script:
-          - npx -p semantic-release -p @semantic-release/commit-analyzer -p @semantic-release/release-notes-generator -p @semantic-release/changelog -p @semantic-release/git -p conventional-changelog-conventionalcommits semantic-release --dry-run --no-ci
+          # --branches: the config releases only from master, so without it the dry-run would
+          # report "not a release branch" on every PR and check nothing.
+          - npx --yes -p semantic-release@25.0.9 -p @semantic-release/commit-analyzer@13.0.1 -p @semantic-release/release-notes-generator@14.1.1 -p @semantic-release/changelog@7.0.0 -p @semantic-release/git@11.0.1 -p conventional-changelog-conventionalcommits@10.4.1 semantic-release --dry-run --no-ci --branches "$BITBUCKET_BRANCH"
 
     - step: &release
         name: Release
@@ -84,7 +86,8 @@ definitions:
           depth: full
         script:
           - git remote set-url origin https://gopay-release-bot:$BITBUCKET_BOT_PUSH_TOKEN@bitbucket.org/$BITBUCKET_REPO_FULL_NAME.git
-          - npx -p semantic-release -p @semantic-release/commit-analyzer -p @semantic-release/release-notes-generator -p @semantic-release/changelog -p @semantic-release/git -p conventional-changelog-conventionalcommits semantic-release
+          # Pinned: this step holds the push token, so nothing in it may float to a new release.
+          - npx --yes -p semantic-release@25.0.9 -p @semantic-release/commit-analyzer@13.0.1 -p @semantic-release/release-notes-generator@14.1.1 -p @semantic-release/changelog@7.0.0 -p @semantic-release/git@11.0.1 -p conventional-changelog-conventionalcommits@10.4.1 semantic-release
         artifacts:
           - CHANGELOG.md
 
