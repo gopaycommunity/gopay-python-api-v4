@@ -1,0 +1,132 @@
+image: python:3.13-slim
+
+definitions:
+  caches:
+    uv: ~/.cache/uv
+
+  steps:
+    - step: &lint
+        name: Lint and types
+        caches:
+          - uv
+        script:
+          - pip install --quiet "uv==0.12.23"
+          - uv sync --frozen
+          - uv run ruff format --check src tests scripts examples
+          - uv run ruff check src tests scripts examples
+          - uv run mypy
+
+    - step: &test
+        name: Unit tests (Python 3.9–3.14)
+        caches:
+          - uv
+        script:
+          - pip install --quiet "uv==0.12.23"
+          # The floor is 3.9 (as the v3 SDK) and every newer interpreter must keep working.
+          - for v in 3.9 3.10 3.11 3.12 3.14; do uv run --frozen --python "$v" pytest -q -p no:cacheprovider || exit 1; done
+          - uv run --frozen --python 3.13 pytest -q --cov --cov-report=xml:coverage.xml
+        artifacts:
+          - coverage.xml
+
+    - step: &e2e
+        name: E2E (sandbox)
+        caches:
+          - uv
+        script:
+          - pip install --quiet "uv==0.12.23"
+          # GOPAY_PAYMENTS_V4_CLIENT_ID / _CLIENT_SECRET / _GOID: secured repository variables
+          # of a sandbox eshop. The suite refuses production on its own.
+          - uv run --frozen pytest -m e2e -q
+
+    - step: &audit
+        name: Dependency audit
+        caches:
+          - uv
+        script:
+          - pip install --quiet "uv==0.12.23"
+          # Runtime dependencies only: they are what ships to merchants.
+          - uv export --frozen --no-dev --no-emit-project --format requirements-txt -o runtime-requirements.txt
+          - uvx --from "pip-audit>=2.7" pip-audit --strict -r runtime-requirements.txt
+
+    - step: &sonar
+        name: Analyze on SonarCloud
+        size: 2x
+        services:
+          - docker2x
+        clone:
+          depth: full
+        script:
+          - pipe: sonarsource/sonarcloud-scan:4.1.0
+            variables:
+              SONAR_SCANNER_OPTS: -Xmx2560m
+              EXTRA_ARGS: -Dsonar.projectKey=gp-gopay_gopay-python-api-v4
+                -Dsonar.organization=gp-gopay
+                -Dsonar.sources=src
+                -Dsonar.exclusions=src/gopay_payments/_generated.py
+                -Dsonar.tests=tests
+                -Dsonar.python.version=3.9,3.10,3.11,3.12,3.13,3.14
+                -Dsonar.python.coverage.reportPaths=coverage.xml
+          - pipe: sonarsource/sonarcloud-quality-gate:0.2.0
+
+    - step: &release-preview
+        name: Release preview (dry-run)
+        image: node:22-bookworm
+        clone:
+          depth: full
+        script:
+          - npx -p semantic-release -p @semantic-release/commit-analyzer -p @semantic-release/release-notes-generator -p @semantic-release/changelog -p @semantic-release/git -p conventional-changelog-conventionalcommits semantic-release --dry-run --no-ci
+
+    - step: &release
+        name: Release
+        image: node:22-bookworm
+        deployment: production
+        clone:
+          depth: full
+        script:
+          - git remote set-url origin https://gopay-release-bot:$BITBUCKET_BOT_PUSH_TOKEN@bitbucket.org/$BITBUCKET_REPO_FULL_NAME.git
+          - npx -p semantic-release -p @semantic-release/commit-analyzer -p @semantic-release/release-notes-generator -p @semantic-release/changelog -p @semantic-release/git -p conventional-changelog-conventionalcommits semantic-release
+        artifacts:
+          - CHANGELOG.md
+
+    - step: &github-sync
+        name: Mirror to GitHub
+        image: node:22-bookworm
+        clone:
+          depth: full
+        script:
+          # Off until github.com/gopaycommunity/gopay-python-api-v4 exists and has this
+          # repository's SSH key as a deploy key; then set GITHUB_MIRROR_ENABLED=true.
+          - if [ "${GITHUB_MIRROR_ENABLED:-}" != "true" ]; then echo "GitHub mirror disabled — skipping."; exit 0; fi
+          - git fetch origin master --tags
+          - git remote add github git@github.com:gopaycommunity/gopay-python-api-v4.git
+          - git push github refs/remotes/origin/master:refs/heads/master --force
+          # One tag per push: GitHub emits no create event for a push carrying more than three
+          # tags, and the PyPI workflow runs on create.
+          - for t in $(git tag --points-at refs/remotes/origin/master); do git push github "refs/tags/$t"; done
+
+  services:
+    docker2x:
+      type: docker
+      memory: 4096
+
+pipelines:
+  pull-requests:
+    '**':
+      - parallel:
+          - step: *lint
+          - step: *test
+          - step: *e2e
+          - step: *audit
+      - step: *sonar
+      - step: *release-preview
+
+  branches:
+    master:
+      - parallel:
+          - step: *lint
+          - step: *test
+          - step: *e2e
+          - step: *audit
+      - step: *sonar
+      - step: *release
+      - step: *github-sync

@@ -1,0 +1,94 @@
+# Publishes gopay-payments-v4 to PyPI from a release tag.
+# Tags come from the Bitbucket "Mirror to GitHub" step; semantic-release creates them as <x.y.z>.
+# Trusted publishing (OIDC) only — never add a PYPI_TOKEN secret.
+
+name: Publish to PyPI
+
+run-name: Publish ${{ inputs.tag || github.ref_name }}
+
+on:
+  # `create`, not `push`: release commits carry [skip ci], which GitHub honours on push but not on create.
+  create:
+  # Manual runs, and the only way to publish a tag that already existed on GitHub.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. 1.2.0"
+        required: true
+        type: string
+      dry-run:
+        description: "Build and check only — do not publish"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag || github.ref_name }}
+    # `create` also fires for branches; only release tags are published.
+    if: github.event_name != 'create' || github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    # The PyPI trusted publisher is registered for this workflow and this environment.
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      DRY_RUN: ${{ inputs.dry-run || false }}
+      # Gates the publish step, not the job, so disarmed runs still build and verify.
+      ARMED: ${{ vars.GOPAY_PYPI_PUBLISH == 'true' }}
+      UV_VERSION: "0.12.23"
+    steps:
+      # Before checkout, so a bad dispatch input is rejected before use as a git ref.
+      - name: Validate tag
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$TAG' is not a release tag (expected <x.y.z>)."
+            exit 1
+          fi
+
+      # Pinned to SHA, not tag: this job mints an OIDC token and a tag can be moved.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          # hatch-vcs derives the version from the tag, so the history has to be there.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        run: python3 -m pip install --user "uv==${UV_VERSION}"
+
+      - name: Build
+        run: ~/.local/bin/uv build
+
+      - name: Verify the built version matches the tag
+        run: |
+          set -euo pipefail
+          expected="dist/gopay_payments_v4-${TAG}-py3-none-any.whl"
+          if [ ! -f "$expected" ]; then
+            echo "::error::Expected $expected, built: $(ls dist)"
+            exit 1
+          fi
+          echo "Built $(ls dist | tr '\n' ' ')"
+
+      - name: Check distributions
+        run: ~/.local/bin/uvx --from "twine>=6" twine check --strict dist/*
+
+      - name: Publish (dry run)
+        if: env.DRY_RUN == 'true' || env.ARMED != 'true'
+        run: |
+          echo "::warning::NOT published — dry run or GOPAY_PYPI_PUBLISH is not 'true'. Built and checked $TAG only."
+
+      # --check-url skips files PyPI already has, so a re-delivered tag is harmless.
+      - name: Publish to PyPI
+        if: env.DRY_RUN != 'true' && env.ARMED == 'true'
+        run: ~/.local/bin/uv publish --trusted-publishing always --check-url https://pypi.org/simple/
