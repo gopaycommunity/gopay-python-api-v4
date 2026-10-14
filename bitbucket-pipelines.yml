@@ -29,13 +29,18 @@ definitions:
           - coverage.xml
 
     - step: &e2e
-        name: E2E (sandbox)
+        name: E2E
+        # Self-hosted, inside GoPay's network, like the PHP SDK's E2E step: the gateway the
+        # repository variables point at is not reachable from Bitbucket's cloud runners
+        # (connect timeout on the first run). The runner has one slot, so expect queueing.
+        runs-on:
+          - cypress
         caches:
           - uv
         script:
           - pip install --quiet "uv==0.12.23"
-          # GOPAY_PAYMENTS_V4_CLIENT_ID / _CLIENT_SECRET / _GOID: secured repository variables
-          # of a sandbox eshop. The suite refuses production on its own.
+          # GOPAY_PAYMENTS_V4_CLIENT_ID / _CLIENT_SECRET / _GOID (and optionally _BASE_URL):
+          # secured repository variables. The suite refuses production on its own.
           - uv run --frozen pytest -m e2e -q
 
     - step: &audit
