@@ -10,7 +10,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from gopay_payments import GoPayClient, GoPayError
+from gopay_payments import GoPayClient, GoPayError, _polling
 
 BASE = "https://gw.sandbox.gopay.com/gp-gw/api/4.0"
 PREFIX = "/gp-gw/api/4.0"
@@ -92,6 +92,16 @@ class ErrorLog:
 
     def __call__(self, error: GoPayError) -> None:
         self.errors.append(error)
+
+
+@pytest.fixture(autouse=True)
+def instant_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pollers pause at least a second between polls; tests should not."""
+
+    def pause(_seconds: float, cancel: Optional[threading.Event]) -> bool:
+        return cancel is not None and cancel.is_set()
+
+    monkeypatch.setattr(_polling, "_pause", pause)
 
 
 @pytest.fixture

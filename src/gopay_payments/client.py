@@ -49,6 +49,8 @@ R = TypeVar("R")
 PAYMENT_TERMINAL_STATES = ("PAID", "CANCELED", "TIMEOUTED", "REFUNDED", "PARTIALLY_REFUNDED")
 REFUND_TERMINAL_STATES = ("SUCCESS", "FAILED")
 RECURRENCE_TERMINAL_STATES = ("STARTED", "STOPPED")
+# The API asks to be polled about once a second. A lower interval would only load it.
+MIN_POLL_INTERVAL = 1.0
 # States of the first payment from which a REQUESTED recurrence can never reach STARTED.
 UNPAYABLE_PAYMENT_STATES = frozenset({"CANCELED", "TIMEOUTED"})
 
@@ -367,7 +369,7 @@ class GoPayClient:
                 PaymentChargeStatusResponse,
                 self._transport.request("GET", f"/payments/{pid}/charge"),
             ),
-            interval=_seconds(interval, "interval"),
+            interval=_interval(interval),
             initial_timeout=_seconds(initial_timeout, "initial_timeout"),
             on_state_change=on_state_change,
             on_action_required=on_action_required,
@@ -399,7 +401,7 @@ class GoPayClient:
             lambda: cast(PaymentDetails, self._transport.request("GET", f"/payments/{pid}")),
             what="Payment",
             terminal_states=PAYMENT_TERMINAL_STATES if terminal_states is None else terminal_states,
-            interval=_seconds(interval, "interval"),
+            interval=_interval(interval),
             timeout=None if timeout is None else _seconds(timeout, "timeout"),
             on_state_change=on_state_change,
             cancel=cancel,
@@ -454,7 +456,7 @@ class GoPayClient:
             lambda: cast(RefundDetails, self._transport.request("GET", f"/refunds/{rid}")),
             what="Refund",
             terminal_states=REFUND_TERMINAL_STATES if terminal_states is None else terminal_states,
-            interval=_seconds(interval, "interval"),
+            interval=_interval(interval),
             timeout=None if timeout is None else _seconds(timeout, "timeout"),
             on_state_change=on_state_change,
             cancel=cancel,
@@ -582,7 +584,9 @@ class GoPayClient:
     def stop_recurrence(self, rec_id: str) -> None:
         """Stop a recurrence so it creates no further payments. ``DELETE /recurrences/{rec_id}``
 
-        It stays readable as ``STOPPED`` with ``stop_reason: "CANCELLED_VIA_API"``.
+        It stays readable as ``STOPPED`` with ``stop_reason: "CANCELLED_VIA_API"``. A
+        recurrence whose first payment is still waiting to be paid cannot be stopped — the
+        API answers ``409`` — so cancel that payment with :meth:`cancel_payment` first.
         """
         rid = require_path_segment(rec_id, "rec_id")
         self._transport.request("DELETE", f"/recurrences/{rid}")
@@ -621,7 +625,7 @@ class GoPayClient:
             terminal_states=RECURRENCE_TERMINAL_STATES
             if terminal_states is None
             else terminal_states,
-            interval=_seconds(interval, "interval"),
+            interval=_interval(interval),
             timeout=None if timeout is None else _seconds(timeout, "timeout"),
             on_state_change=on_state_change,
             cancel=cancel,
@@ -632,6 +636,16 @@ def _goid(goid: Union[str, int]) -> str:
     if isinstance(goid, int) and not isinstance(goid, bool):
         goid = str(goid)
     return require_path_segment(goid, "goid")
+
+
+def _interval(value: Any) -> float:
+    seconds = _seconds(value, "interval")
+    if seconds < MIN_POLL_INTERVAL:
+        raise GoPaySDKError(
+            f"[GoPaySDK] interval must be at least {MIN_POLL_INTERVAL:g} second",
+            error_code=ErrorCode.INVALID_ARGUMENT,
+        )
+    return seconds
 
 
 def _seconds(value: Any, field: str) -> float:
