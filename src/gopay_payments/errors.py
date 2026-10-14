@@ -1,0 +1,97 @@
+"""Errors raised by the SDK.
+
+Two kinds, with a common base so a caller can catch either:
+
+- :class:`GoPayHTTPError` — the API answered with a non-2xx status. ``status`` and
+  ``body`` carry what it said.
+- :class:`GoPaySDKError` — the SDK itself gave up: bad arguments, no credentials, a
+  timeout, a charge that failed while polling. ``error_code`` says which.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Any, Optional
+
+
+class ErrorCode(str, Enum):
+    """Machine-readable reason carried by :class:`GoPaySDKError`.
+
+    The values are the same strings the PHP and JavaScript SDKs use.
+    """
+
+    AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"
+    """No access token is available — call ``authenticate()`` first."""
+    AUTH_REFRESH_FAILED = "AUTH_REFRESH_FAILED"
+    """Obtaining a new access token with the stored credentials failed."""
+    AUTH_INVALID_RESPONSE = "AUTH_INVALID_RESPONSE"
+    """The token endpoint answered without the fields a token needs."""
+    AUTH_CREDENTIALS_MISSING = "AUTH_CREDENTIALS_MISSING"
+    """The operation needs credentials or a shareable key the client does not have."""
+    AUTH_UNAUTHORIZED = "AUTH_UNAUTHORIZED"
+    """The API rejected a freshly obtained token — usually a missing OAuth2 scope."""
+    NETWORK_TIMEOUT = "NETWORK_TIMEOUT"
+    """The request did not complete within the configured timeout."""
+    NETWORK_ERROR = "NETWORK_ERROR"
+    """No usable response arrived (connection failure, malformed body)."""
+    CHARGE_TIMEOUT = "CHARGE_TIMEOUT"
+    """Polling gave up before the charge, payment, refund or recurrence settled."""
+    CHARGE_FAILED = "CHARGE_FAILED"
+    """The charge reached ``FAILED``, or polling was cancelled."""
+    INVALID_CONFIG = "INVALID_CONFIG"
+    """The client configuration is invalid."""
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    """A required argument is missing or invalid."""
+
+
+class GoPayError(Exception):
+    """Base class of every error the SDK raises."""
+
+    # Set once the error has been handed to ``on_error``, so an error crossing several
+    # layers on its way out is reported exactly once.
+    _reported: bool = False
+
+
+class GoPaySDKError(GoPayError):
+    """The SDK could not complete the operation.
+
+    ``charge_state`` holds the final charge state when ``error_code`` is
+    ``CHARGE_FAILED`` because the charge reached ``FAILED`` — ``fail_reason`` in it says
+    why, without needing an ``on_state_change`` callback.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: Optional[ErrorCode] = None,
+        charge_state: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.charge_state = charge_state
+
+
+class GoPayHTTPError(GoPayError):
+    """The API answered with a non-2xx status.
+
+    ``body`` is the parsed JSON response, or the raw text when it was not JSON.
+    ``endpoint`` is the request path with ids collapsed to ``{id}``
+    (``/payments/{id}/charge``) — a stable key for grouping errors in monitoring.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        body: Any,
+        *,
+        method: Optional[str] = None,
+        endpoint: Optional[str] = None,
+    ) -> None:
+        # The message stays free of the endpoint and the body: callers match on it, and
+        # the details belong in fields a tracker can read.
+        super().__init__(f"GoPay API error: HTTP {status}")
+        self.status = status
+        self.body = body
+        self.method = method
+        self.endpoint = endpoint
