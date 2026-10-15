@@ -102,8 +102,9 @@ def test_invalid_token_response(
     make_client: Callable[..., GoPayClient], gateway: FakeGateway, body: object
 ) -> None:
     gateway.on("POST", TOKEN_PATH, reply(200, body))
+    client = make_client()
     with pytest.raises(GoPaySDKError) as caught:
-        make_client().authenticate("client-id", "client-secret", SCOPE)
+        client.authenticate("client-id", "client-secret", SCOPE)
     assert caught.value.error_code is ErrorCode.AUTH_INVALID_RESPONSE
 
 
@@ -112,8 +113,9 @@ def test_authenticate_rejects_blank_arguments(
     make_client: Callable[..., GoPayClient], gateway: FakeGateway, field: str
 ) -> None:
     args = {"client_id": "id", "client_secret": "secret", "scope": SCOPE, field: " "}
+    client = make_client()
     with pytest.raises(GoPaySDKError) as caught:
-        make_client().authenticate(**args)
+        client.authenticate(**args)
     assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT
     assert gateway.requests == []
 
@@ -121,8 +123,9 @@ def test_authenticate_rejects_blank_arguments(
 def test_calling_without_authenticate(
     make_client: Callable[..., GoPayClient], errors: ErrorLog
 ) -> None:
+    client = make_client()
     with pytest.raises(GoPaySDKError) as caught:
-        make_client().get_payment_status("1")
+        client.get_payment_status("1")
     assert caught.value.error_code is ErrorCode.AUTH_TOKEN_MISSING
     assert errors.errors == [caught.value]
 

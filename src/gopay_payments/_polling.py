@@ -22,10 +22,62 @@ def _pause(seconds: float, cancel: Optional[threading.Event]) -> bool:
     return False
 
 
-def _aborted(what: str) -> GoPaySDKError:
-    return GoPaySDKError(
-        f"[GoPaySDK] {what} polling cancelled.", error_code=ErrorCode.CHARGE_FAILED
-    )
+class _Deadline:
+    """A point in time polling must not run past; ``None`` seconds means no limit."""
+
+    def __init__(self, seconds: Optional[float]) -> None:
+        self._at = None if seconds is None else _clock() + seconds
+
+    def lift(self) -> None:
+        self._at = None
+
+    def expired(self) -> bool:
+        return self._at is not None and _clock() >= self._at
+
+    def remaining(self, interval: float) -> float:
+        """How long to pause: the interval, cut short so the deadline is not overslept."""
+        return interval if self._at is None else min(interval, self._at - _clock())
+
+
+class _RedirectNotifier:
+    """Hands each distinct 3-D Secure redirect URL to the callback, once."""
+
+    def __init__(self, callback: Optional[Callable[[str], object]]) -> None:
+        self._callback = callback
+        self._last: Optional[str] = None
+
+    def notify(self, state: Mapping[str, object]) -> None:
+        action = state.get("action")
+        redirect = action.get("redirect_url") if isinstance(action, Mapping) else None
+        if not isinstance(redirect, str) or not redirect or redirect == self._last:
+            return
+        self._last = redirect
+        if self._callback is not None:
+            self._callback(redirect)
+
+
+def _poll_once(poll: Callable[[], T], on_state_change: Optional[Callable[[T], object]]) -> T:
+    state = poll()
+    if on_state_change is not None:
+        on_state_change(state)
+    return state
+
+
+def _wait(
+    deadline: _Deadline,
+    interval: float,
+    cancel: Optional[threading.Event],
+    *,
+    what: str,
+    timeout_error: Callable[[], GoPaySDKError],
+) -> None:
+    """Pause before the next poll, raising on a deadline passed or a cancel requested."""
+    if deadline.expired():
+        raise timeout_error()
+    if _pause(deadline.remaining(interval), cancel):
+        raise _aborted(what)
+    if deadline.expired():
+        raise timeout_error()
 
 
 def await_charge(
@@ -45,14 +97,11 @@ def await_charge(
     once ``ACTION_REQUIRED`` is seen: the customer may take as long as they need with 3-D
     Secure. ``on_action_required`` fires once per distinct redirect URL.
     """
-    if cancel is not None and cancel.is_set():
-        raise _aborted("Charge")
-    deadline: Optional[float] = _clock() + initial_timeout
-    last_redirect: Optional[str] = None
+    _raise_if_cancelled(cancel, "Charge")
+    deadline = _Deadline(initial_timeout)
+    redirects = _RedirectNotifier(on_action_required)
     while True:
-        state = poll()
-        if on_state_change is not None:
-            on_state_change(state)
+        state = _poll_once(poll, on_state_change)
         current = state.get("state")
         if current == "SUCCEEDED":
             return state
@@ -61,20 +110,9 @@ def await_charge(
                 "[GoPaySDK] Charge failed", error_code=ErrorCode.CHARGE_FAILED, charge_state=state
             )
         if current == "ACTION_REQUIRED":
-            deadline = None
-            action = state.get("action")
-            redirect = action.get("redirect_url") if isinstance(action, Mapping) else None
-            if isinstance(redirect, str) and redirect and redirect != last_redirect:
-                last_redirect = redirect
-                if on_action_required is not None:
-                    on_action_required(redirect)
-        if _timed_out(deadline):
-            raise _charge_timeout()
-        wait = interval if deadline is None else min(interval, deadline - _clock())
-        if _pause(wait, cancel):
-            raise _aborted("Charge")
-        if _timed_out(deadline):
-            raise _charge_timeout()
+            deadline.lift()
+            redirects.notify(state)
+        _wait(deadline, interval, cancel, what="Charge", timeout_error=_charge_timeout)
 
 
 def await_state(
@@ -93,27 +131,25 @@ def await_state(
     recurrence may stay pending far longer than any sensible client-side ceiling, and the
     API ends it on its own schedule. Raises ``CHARGE_TIMEOUT`` when ``timeout`` elapses.
     """
-    if cancel is not None and cancel.is_set():
-        raise _aborted(what)
+    _raise_if_cancelled(cancel, what)
     terminal = frozenset(terminal_states)
-    deadline = None if timeout is None else _clock() + timeout
+    deadline = _Deadline(timeout)
     while True:
-        state = poll()
-        if on_state_change is not None:
-            on_state_change(state)
+        state = _poll_once(poll, on_state_change)
         if state.get("state") in terminal:
             return state
-        if _timed_out(deadline):
-            raise _state_timeout(what)
-        wait = interval if deadline is None else min(interval, deadline - _clock())
-        if _pause(wait, cancel):
-            raise _aborted(what)
-        if _timed_out(deadline):
-            raise _state_timeout(what)
+        _wait(deadline, interval, cancel, what=what, timeout_error=lambda: _state_timeout(what))
 
 
-def _timed_out(deadline: Optional[float]) -> bool:
-    return deadline is not None and _clock() >= deadline
+def _raise_if_cancelled(cancel: Optional[threading.Event], what: str) -> None:
+    if cancel is not None and cancel.is_set():
+        raise _aborted(what)
+
+
+def _aborted(what: str) -> GoPaySDKError:
+    return GoPaySDKError(
+        f"[GoPaySDK] {what} polling cancelled.", error_code=ErrorCode.CHARGE_FAILED
+    )
 
 
 def _charge_timeout() -> GoPaySDKError:

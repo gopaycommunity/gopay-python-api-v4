@@ -20,7 +20,8 @@ from .token_cache import CachedToken, InMemoryTokenCache, TokenCache
 logger = logging.getLogger("gopay_payments")
 
 TOKEN_PATH = "/oauth2/token"
-ACCEPT = "application/json"
+JSON_CONTENT_TYPE = "application/json"
+ACCEPT = JSON_CONTENT_TYPE
 
 # A token this close to expiry is replaced before use rather than sent and rejected.
 REFRESH_MARGIN_SECONDS = 30.0
@@ -287,7 +288,7 @@ class Transport:
         if method in ("POST", "PUT"):
             # Also on a POST without a body: the gateway answers 415 to a POST that does
             # not declare a content type, even when the endpoint takes no body at all.
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = JSON_CONTENT_TYPE
         return headers
 
     def _send(
@@ -354,7 +355,7 @@ def _error_body(response: httpx.Response) -> Any:
     # application/json, and the +json types an intermediary may answer with
     # (application/problem+json).
     content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if content_type == "application/json" or content_type.endswith("+json"):
+    if content_type == JSON_CONTENT_TYPE or content_type.endswith("+json"):
         try:
             return response.json()
         except ValueError:

@@ -47,6 +47,9 @@ __all__ = ["BrowserKeys", "GoPayClient"]
 P = ParamSpec("P")
 R = TypeVar("R")
 
+# A response body the spec gives no schema of its own (the wallet info endpoints).
+JsonObject = dict[str, Any]
+
 PAYMENT_TERMINAL_STATES = ("PAID", "CANCELED", "TIMEOUTED", "REFUNDED", "PARTIALLY_REFUNDED")
 REFUND_TERMINAL_STATES = ("SUCCESS", "FAILED")
 RECURRENCE_TERMINAL_STATES = ("STARTED", "STOPPED")
@@ -281,20 +284,20 @@ class GoPayClient:
         return cast(PaymentChargeStatusResponse, self._transport.request("GET", path))
 
     @_reported
-    def get_google_pay_info(self, payment_id: str) -> dict[str, Any]:
+    def get_google_pay_info(self, payment_id: str) -> JsonObject:
         """Return the Google Pay configuration for a payment.
         ``GET /payments/{payment_id}/google-pay/info``"""
         pid = require_path_segment(payment_id, "payment_id")
         path = f"/payments/{pid}/google-pay/info"
-        return cast("dict[str, Any]", self._transport.request("GET", path))
+        return cast(JsonObject, self._transport.request("GET", path))
 
     @_reported
-    def get_apple_pay_info(self, payment_id: str) -> dict[str, Any]:
+    def get_apple_pay_info(self, payment_id: str) -> JsonObject:
         """Return the Apple Pay configuration for a payment.
         ``GET /payments/{payment_id}/apple-pay/info``"""
         pid = require_path_segment(payment_id, "payment_id")
         path = f"/payments/{pid}/apple-pay/info"
-        return cast("dict[str, Any]", self._transport.request("GET", path))
+        return cast(JsonObject, self._transport.request("GET", path))
 
     @_reported
     def validate_apple_pay_merchant(
@@ -303,7 +306,7 @@ class GoPayClient:
         params: Optional[ValidateMerchantRequest] = None,
         *,
         origin: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         """Validate the merchant for an Apple Pay session and return the merchant session.
         ``POST /payments/{payment_id}/apple-pay/validate``
 
@@ -316,7 +319,7 @@ class GoPayClient:
         headers = None if origin is None else {"Origin": require_https_origin(origin, "origin")}
         path = f"/payments/{pid}/apple-pay/validate"
         result = self._transport.request("POST", path, body=params, headers=headers)
-        return cast("dict[str, Any]", result)
+        return cast(JsonObject, result)
 
     @_reported
     def get_qr_payment_info(
