@@ -77,8 +77,9 @@ def test_a_body_that_is_not_json_is_an_invalid_argument(
 def test_a_circular_body_is_an_invalid_argument(client: GoPayClient, gateway: FakeGateway) -> None:
     params: dict[str, Any] = {"amount": 100}
     params["self"] = params
+    body = cast(Any, params)
     with pytest.raises(GoPaySDKError) as caught:
-        client.refund_payment("1", cast(Any, params))
+        client.refund_payment("1", body)
     assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT
     assert gateway.api_requests() == []
 

@@ -20,7 +20,8 @@ from .token_cache import CachedToken, InMemoryTokenCache, TokenCache
 
 logger = logging.getLogger("gopay_payments")
 
-TOKEN_PATH = "/oauth2/token"  # noqa: S105 — a path, not a secret
+# A path, not a secret: the S105 check takes any *TOKEN* name for one.
+TOKEN_PATH = "/oauth2/token"  # noqa: S105
 JSON_CONTENT_TYPE = "application/json"
 ACCEPT = JSON_CONTENT_TYPE
 

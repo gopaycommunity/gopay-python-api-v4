@@ -20,7 +20,8 @@ class ErrorCode(str, Enum):
     The values are the same strings the PHP and JavaScript SDKs use.
     """
 
-    AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"  # noqa: S105 — an error code, not a secret
+    # An error code, not a secret: the S105 check takes any *TOKEN* name for one.
+    AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"  # noqa: S105
     """No access token is available — call ``authenticate()`` first."""
     AUTH_REFRESH_FAILED = "AUTH_REFRESH_FAILED"
     """Obtaining a new access token with the stored credentials failed."""

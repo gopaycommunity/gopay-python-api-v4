@@ -129,8 +129,9 @@ def test_a_token_response_that_is_not_json(
     make_client: Callable[..., GoPayClient], gateway: FakeGateway
 ) -> None:
     gateway.on("POST", TOKEN_PATH, reply(200, text="<html>maintenance</html>"))
+    client = make_client()
     with pytest.raises(GoPaySDKError) as caught:
-        make_client().authenticate("client-id", "client-secret", SCOPE)
+        client.authenticate("client-id", "client-secret", SCOPE)
     assert caught.value.error_code is ErrorCode.AUTH_INVALID_RESPONSE
     # Not chained: a decode error carries the whole body, and a token body holds a token.
     assert caught.value.__cause__ is None
@@ -372,8 +373,9 @@ def test_secrets_stay_out_of_logs_errors_and_reprs(
     reject = True
     with pytest.raises(GoPaySDKError):  # AUTH_REFRESH_FAILED, caused by the token call's 401
         client.get_payment_status("1")
+    rejected = make_client()
     with pytest.raises(GoPayHTTPError):
-        make_client().authenticate("client-id", SECRET, SCOPE)
+        rejected.authenticate("client-id", SECRET, SCOPE)
 
     assert len(issued) == 2
     assert [type(e) for e in errors.errors] == [GoPaySDKError, GoPaySDKError, GoPayHTTPError]
