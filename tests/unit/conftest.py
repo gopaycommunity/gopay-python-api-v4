@@ -18,6 +18,11 @@ TOKEN_PATH = "/oauth2/token"
 
 Reply = Union[httpx.Response, Exception, Callable[[httpx.Request], httpx.Response]]
 
+# Captured at import, before the autouse fixture below replaces them, for the tests that
+# need the real thing.
+REAL_PAUSE = _polling._pause
+REAL_CLOCK = _polling._clock
+
 
 def reply(status: int = 200, body: Any = None, *, text: Optional[str] = None) -> httpx.Response:
     if text is not None:

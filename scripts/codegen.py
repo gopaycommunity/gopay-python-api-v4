@@ -3,9 +3,9 @@
 The next spec is the upcoming version of the GoPay Payments API spec, ahead of what
 api-docs.gopay.com publishes. Run:
 
-    SPEC_SOURCE=<url-or-path> uv run scripts/codegen.py
+    SPEC_SOURCE='../gopay-payments-api-v4/spec/en/payments.yaml' uv run scripts/codegen.py
 
-SPEC_SOURCE is required and may be a URL or a local file path. The two supported ways to
+SPEC_SOURCE is required and may be an https:// URL or a local file path. The two supported ways to
 obtain the next spec are documented in CLAUDE.md. The source is deliberately not hardcoded:
 this repo is mirrored to the public gopaycommunity organisation, so a URL baked in here would
 be published with it.
@@ -55,7 +55,7 @@ MOCK_SERVER = re.compile(
 USAGE = """\
 codegen: no spec source given.
 
-Set SPEC_SOURCE to the next spec. It may be a URL or a local path:
+Set SPEC_SOURCE to the next spec. It may be an https:// URL or a local path:
 
   SPEC_SOURCE='https://…/spec/en/payments.yaml' uv run scripts/codegen.py   # internal feed
   SPEC_SOURCE='../gopay-payments-api-v4/spec/en/payments.yaml' uv run scripts/codegen.py  # sideload
@@ -70,7 +70,10 @@ def fail(message: str) -> None:
 
 
 def stage_spec(source: str) -> None:
-    if source.startswith(("http://", "https://")):
+    if source.startswith("http://"):
+        # The spec is turned into code committed here: it must not travel unauthenticated.
+        fail("SPEC_SOURCE must use https://, not http://.")
+    if source.startswith("https://"):
         print("→ Fetching the next spec ...")
         with urllib.request.urlopen(source, timeout=60) as response:
             STAGED_SPEC.write_bytes(response.read())

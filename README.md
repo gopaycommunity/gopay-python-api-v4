@@ -2,13 +2,15 @@
 
 Python server-side SDK for the [GoPay Payments API v4](https://api-docs.gopay.com/).
 
-- Every server operation of the API: payments, charges, refunds, payment links, recurrences
-  and stored cards.
+- Every operation a merchant's server calls: payments, charges, refunds, payment links,
+  recurrences and stored cards. `GET /payments/{payment_id}/apple-pay/app-info` is left out on
+  purpose: it serves native apps, and only GoPay's client SDKs call it.
 - Pollers that follow a charge, payment, refund or recurrence until it settles — including
   handing you the 3-D Secure redirect.
 - Typed request and response shapes (`TypedDict`), generated from the published spec.
-- Synchronous, thread-safe, one runtime dependency besides `typing_extensions`
-  ([httpx](https://www.python-httpx.org/)).
+- Synchronous only, and thread-safe. There is no `asyncio` client; from async code, run a
+  call in a worker thread: `await asyncio.to_thread(client.get_payment_status, payment_id)`.
+- One runtime dependency besides `typing_extensions` ([httpx](https://www.python-httpx.org/)).
 - Python 3.9 and newer.
 
 Moving from the v3 SDK (`gopay`)? See [MIGRATION.md](MIGRATION.md). The two packages can be
@@ -122,7 +124,8 @@ state, `fail_reason` included, is on `error.charge_state`).
 `ACTION_REQUIRED` and `on_action_required` receives the URL once. The bank keeps the
 authentication open only briefly: queueing the redirect, e-mailing it or showing it as a link
 for later finds the payment already abandoned. From that point the poller waits as long as the
-customer needs.
+customer needs. The URL is handed out only while the customer still has to complete the
+authentication, so a poller started after they are back never sends them to a finished one.
 
 **`browser_data` must come from the customer's browser.** Its `ip`, `user_agent` and
 `accept_header` describe the connection the 3-D Secure challenge runs on. Fetch them in the
@@ -151,7 +154,8 @@ final = client.await_payment_status(payment_id)         # PAID, CANCELED, TIMEOU
 ```
 
 `await_payment_status()` has no timeout of its own — the API ends an unpaid payment on its own
-schedule. Pass `timeout=` (seconds) for a client-side ceiling.
+schedule. Pass `timeout=` (seconds) for a client-side ceiling. It also returns on `AUTHORIZED`:
+a pre-authorized payment waits for you to capture it, not for the poller.
 
 ## API
 
@@ -245,7 +249,7 @@ API side; read the resource again to see where it stands.
 
 | Poller | Default interval | Timeout |
 |---|---|---|
-| `await_charge_state` | 2 s | `initial_timeout=30` — lifted once 3-D Secure starts |
+| `await_charge_state` | 2 s | `initial_timeout=30` — lifted once the customer is sent to 3-D Secure |
 | `await_payment_status` | 3 s | none unless `timeout=` |
 | `await_refund_state` | 3 s | none unless `timeout=` |
 | `await_recurrence_state` | 3 s | none unless `timeout=` |
@@ -265,12 +269,13 @@ Every error the SDK raises is a `GoPayError`:
 | `ErrorCode` | |
 |---|---|
 | `AUTH_TOKEN_MISSING` | no token — call `authenticate()` |
-| `AUTH_REFRESH_FAILED` | replacing an expired token failed; call `authenticate()` again |
+| `AUTH_REFRESH_FAILED` | replacing an expired token failed — see below whether to call `authenticate()` again |
 | `AUTH_INVALID_RESPONSE` | the token response was incomplete |
 | `AUTH_CREDENTIALS_MISSING` | `get_browser_keys()` without a shareable key or authentication |
 | `AUTH_UNAUTHORIZED` | a fresh token was rejected — usually a missing scope |
 | `NETWORK_TIMEOUT` | the request timed out |
-| `NETWORK_ERROR` | no usable response arrived |
+| `NETWORK_ERROR` | the connection failed; no response arrived |
+| `UNEXPECTED_RESPONSE` | the API answered `2xx` with a body that is empty, not JSON, or not the expected object |
 | `CHARGE_TIMEOUT` | a poller's timeout elapsed |
 | `CHARGE_FAILED` | the charge failed, a recurrence can no longer start, or polling was cancelled |
 | `INVALID_CONFIG` | invalid client configuration |
@@ -285,6 +290,12 @@ except GoPayHTTPError as error:
     if error.status == 409:
         ...  # the payment is no longer CREATED
 ```
+
+**Credentials survive an outage.** When the token request fails with a timeout, a dropped
+connection, `408`, `429` or a `5xx` — in `authenticate()` or while replacing an expiring token —
+the client keeps the credentials and the next call obtains a token on its own. Only credentials
+the token endpoint refuses (any other `4xx`) are forgotten; then call `authenticate()` with valid
+ones.
 
 Reads (`GET`) are retried twice on a `5xx` or a dropped connection. Nothing that changes state
 is retried: a charge or refund that reached the API must not be sent twice, and a cancel the API

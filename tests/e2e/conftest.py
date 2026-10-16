@@ -3,10 +3,10 @@
 Run with ``uv run pytest -m e2e``. They read:
 
 - ``GOPAY_PAYMENTS_V4_CLIENT_ID``, ``GOPAY_PAYMENTS_V4_CLIENT_SECRET``, ``GOPAY_PAYMENTS_V4_GOID``
-- ``GOPAY_PAYMENTS_V4_ENVIRONMENT`` (default ``sandbox``) and ``GOPAY_PAYMENTS_V4_BASE_URL``
-  (optional, for a non-default gateway)
+- ``GOPAY_PAYMENTS_V4_BASE_URL`` (optional): a gateway other than the public sandbox
 
-They create and cancel real payments, so they refuse to run against production.
+They create and cancel real payments, so they run on the sandbox environment only and refuse a
+base URL that points at production.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from gopay_payments import GoPayClient, GoPayScopes, combine_scopes
+from gopay_payments import Environment, GoPayClient, GoPayScopes, combine_scopes
 from gopay_payments.types import PaymentCreateRequest
 
 PRODUCTION_HOSTS = {"gate.gopay.com"}
@@ -40,13 +40,12 @@ def goid() -> str:
 
 @pytest.fixture(scope="session")
 def client() -> Iterator[GoPayClient]:
-    environment = os.environ.get("GOPAY_PAYMENTS_V4_ENVIRONMENT", "sandbox")
     base_url = os.environ.get("GOPAY_PAYMENTS_V4_BASE_URL") or None
     host = urlsplit(base_url).hostname if base_url else None
-    if environment == "production" or host in PRODUCTION_HOSTS:
+    if host in PRODUCTION_HOSTS:
         pytest.fail("e2e tests create payments and must not run against production", pytrace=False)
     with GoPayClient(
-        environment=environment,  # type: ignore[arg-type]
+        environment=Environment.SANDBOX,
         base_url=base_url,
         user_agent_suffix="gopay-python-api-v4-e2e",
     ) as c:

@@ -11,7 +11,7 @@ The cached value is a bearer token. Store it where you would store any other cre
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from typing_extensions import Protocol
@@ -21,7 +21,9 @@ from typing_extensions import Protocol
 class CachedToken:
     """An access token and the moment it stops being valid."""
 
-    access_token: str
+    # Out of the repr, so a token in a log line, a traceback or a tracker's captured
+    # locals shows as CachedToken(expires_at=...).
+    access_token: str = field(repr=False)
     expires_at: float
     """Unix timestamp, in seconds."""
 

@@ -1,12 +1,17 @@
 """Refund part of a paid payment and wait for the refund to settle.
 
-PAYMENT_ID=3308747598 uv run python examples/refund.py
+uv run python examples/refund.py 3308747598    # the id of a PAID sandbox payment
 """
 
-from _common import env, sandbox_client
+import sys
+
+from _common import sandbox_client
+
+if len(sys.argv) != 2:
+    sys.exit("Usage: uv run python examples/refund.py PAYMENT_ID  (a PAID sandbox payment)")
+payment_id = sys.argv[1]
 
 with sandbox_client() as client:
-    payment_id = env("PAYMENT_ID")
     refund = client.refund_payment(payment_id, {"amount": 50})
     print("refund", refund["id"], refund["state"])  # REQUESTED: accepted, not settled
 

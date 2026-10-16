@@ -50,7 +50,16 @@ R = TypeVar("R")
 # A response body the spec gives no schema of its own (the wallet info endpoints).
 JsonObject = dict[str, Any]
 
-PAYMENT_TERMINAL_STATES = ("PAID", "CANCELED", "TIMEOUTED", "REFUNDED", "PARTIALLY_REFUNDED")
+# AUTHORIZED is final for this poller: a pre-authorized payment waits for the merchant to
+# capture it, which no amount of polling brings about.
+PAYMENT_TERMINAL_STATES = (
+    "PAID",
+    "AUTHORIZED",
+    "CANCELED",
+    "TIMEOUTED",
+    "REFUNDED",
+    "PARTIALLY_REFUNDED",
+)
 REFUND_TERMINAL_STATES = ("SUCCESS", "FAILED")
 RECURRENCE_TERMINAL_STATES = ("STARTED", "STOPPED")
 # The API asks to be polled about once a second. A lower interval would only load it.
@@ -257,7 +266,7 @@ class GoPayClient:
         charge was attempted. The payment moves to ``CANCELED`` and stays readable.
         """
         pid = require_path_segment(payment_id, "payment_id")
-        self._transport.request("DELETE", f"/payments/{pid}")
+        self._transport.delete(f"/payments/{pid}")
 
     @_reported
     def charge_payment(self, payment_id: str, params: PaymentChargeInput) -> PaymentChargeResponse:
@@ -356,14 +365,16 @@ class GoPayClient:
 
         Returns on ``SUCCEEDED``. Raises :class:`GoPaySDKError` with ``CHARGE_FAILED`` on
         ``FAILED`` — the state, ``fail_reason`` included, is on ``charge_state`` — and
-        with ``CHARGE_TIMEOUT`` if the charge has not left ``REQUESTED``/``PROCESSING``
+        with ``CHARGE_TIMEOUT`` if the charge is neither decided nor waiting on the customer
         within ``initial_timeout`` seconds.
 
         When the bank asks for 3-D Secure the charge moves to ``ACTION_REQUIRED`` and
         ``on_action_required`` receives the redirect URL. **Send the customer there
         immediately**: the bank keeps the authentication open only briefly, and a late
         redirect finds the payment already abandoned. From that point the timeout no
-        longer applies and polling continues until the customer is done.
+        longer applies and polling continues until the customer is done. Once the
+        customer has finished 3-D Secure, the URL is not handed out again — polling from
+        the return URL never sends the customer back to a finished authentication.
 
         :param cancel: Set this event to stop polling; raises ``CHARGE_FAILED``.
         """
@@ -395,7 +406,8 @@ class GoPayClient:
 
         For QR and bank-transfer payments, which are confirmed at the payment level
         (``PAID``) rather than by a charge. The default terminal states are ``PAID``,
-        ``CANCELED``, ``TIMEOUTED``, ``REFUNDED`` and ``PARTIALLY_REFUNDED``.
+        ``AUTHORIZED`` (pre-authorized, waiting for capture), ``CANCELED``, ``TIMEOUTED``,
+        ``REFUNDED`` and ``PARTIALLY_REFUNDED``.
 
         No timeout by default — the API ends an unpaid payment on its own schedule. Pass
         ``timeout`` (seconds) for a client-side ceiling; it raises ``CHARGE_TIMEOUT``.
@@ -431,7 +443,7 @@ class GoPayClient:
         """List the refunds of a payment. ``GET /payments/{payment_id}/refunds``"""
         pid = require_path_segment(payment_id, "payment_id")
         path = f"/payments/{pid}/refunds"
-        return cast("list[RefundDetails]", self._transport.request("GET", path))
+        return cast("list[RefundDetails]", self._transport.request("GET", path, many=True))
 
     @_reported
     def get_refund(self, refund_id: str) -> RefundDetails:
@@ -480,7 +492,7 @@ class GoPayClient:
     def delete_card(self, card_id: str) -> None:
         """Delete a stored card token. ``DELETE /cards/tokens/{card_id}`` (scope ``card:write``)"""
         cid = require_path_segment(card_id, "card_id")
-        self._transport.request("DELETE", f"/cards/tokens/{cid}")
+        self._transport.delete(f"/cards/tokens/{cid}")
 
     @_reported
     def tokenize_encrypted_card(self, payload: str) -> PermanentCardTokenDetails:
@@ -530,7 +542,7 @@ class GoPayClient:
         which keeps leading to the payment it created; cancel that payment instead.
         """
         lid = require_path_segment(link_id, "link_id")
-        self._transport.request("DELETE", f"/eshops/{_goid(goid)}/links/{lid}")
+        self._transport.delete(f"/eshops/{_goid(goid)}/links/{lid}")
 
     # --------------------------------------------------------------- recurrences
 
@@ -593,7 +605,7 @@ class GoPayClient:
         API answers ``409`` — so cancel that payment with :meth:`cancel_payment` first.
         """
         rid = require_path_segment(rec_id, "rec_id")
-        self._transport.request("DELETE", f"/recurrences/{rid}")
+        self._transport.delete(f"/recurrences/{rid}")
 
     @_reported
     def await_recurrence_state(

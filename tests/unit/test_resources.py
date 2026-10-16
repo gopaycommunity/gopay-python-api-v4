@@ -192,12 +192,13 @@ def test_endpoint(
     path: str,
     body: Any,
 ) -> None:
-    gateway.on(method, path, reply(204) if method == "DELETE" else reply(200, {"ok": name}))
+    answer: Any = [{"ok": name}] if name == "list_refunds" else {"ok": name}
+    gateway.on(method, path, reply(204) if method == "DELETE" else reply(200, answer))
     result = call(client)
     request = gateway.last()
     assert (request.method, path_of(request)) == (method, path)
     assert json_of(request) == body
-    assert result == (None if method == "DELETE" else {"ok": name})
+    assert result == (None if method == "DELETE" else answer)
 
 
 def test_apple_pay_validation_sends_the_origin(client: GoPayClient, gateway: FakeGateway) -> None:

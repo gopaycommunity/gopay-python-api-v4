@@ -7,7 +7,8 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any, Callable, NamedTuple, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -19,7 +20,7 @@ from .token_cache import CachedToken, InMemoryTokenCache, TokenCache
 
 logger = logging.getLogger("gopay_payments")
 
-TOKEN_PATH = "/oauth2/token"
+TOKEN_PATH = "/oauth2/token"  # noqa: S105 — a path, not a secret
 JSON_CONTENT_TYPE = "application/json"
 ACCEPT = JSON_CONTENT_TYPE
 
@@ -57,9 +58,12 @@ def report(on_error: Optional[OnError], error: GoPayError) -> None:
         )
 
 
-class _Credentials(NamedTuple):
+@dataclass(frozen=True)
+class _Credentials:
     client_id: str
-    client_secret: str
+    # Out of the repr: credentials sit in the locals of every frame that handles them, and
+    # tracebacks and error trackers print those.
+    client_secret: str = field(repr=False)
     scope: str
 
 
@@ -122,8 +126,12 @@ class Transport:
                 return
             try:
                 self._fetch_token(credentials)
-            except GoPayError:
-                self._credentials = None
+            except GoPayError as error:
+                # The same rule as for a refresh: only a refusal of the credentials is a
+                # reason to forget them. After a timeout or a 5xx they stay, and the next
+                # call obtains the token instead of failing with AUTH_TOKEN_MISSING.
+                if _is_permanent_rejection(error):
+                    self._forget(credentials)
                 raise
 
     def has_token(self) -> bool:
@@ -146,7 +154,8 @@ class Transport:
             self._cache.delete(self._cache_key(credentials))
 
     def _fetch_token(self, credentials: _Credentials) -> CachedToken:
-        basic = base64.b64encode(
+        # Named so that error trackers scrubbing locals by name ("authorization") hide it.
+        authorization = "Basic " + base64.b64encode(
             f"{credentials.client_id}:{credentials.client_secret}".encode()
         ).decode("ascii")
         response = self._send(
@@ -156,7 +165,7 @@ class Transport:
                 "Accept": ACCEPT,
                 "User-Agent": self.user_agent,
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Authorization": f"Basic {basic}",
+                "Authorization": authorization,
             },
             content=urlencode(
                 {"grant_type": "client_credentials", "scope": credentials.scope}
@@ -166,7 +175,14 @@ class Transport:
             raise GoPayHTTPError(
                 response.status_code, _error_body(response), method="POST", endpoint=TOKEN_PATH
             )
-        body = _json(response)
+        try:
+            body = response.json()
+        except ValueError:
+            # Not chained: the decode error keeps the whole body, which may hold a token.
+            raise GoPaySDKError(
+                "[GoPaySDK] Invalid token response: could not parse JSON.",
+                error_code=ErrorCode.AUTH_INVALID_RESPONSE,
+            ) from None
         access_token = body.get("access_token") if isinstance(body, dict) else None
         expires_in = body.get("expires_in") if isinstance(body, dict) else None
         if (
@@ -209,8 +225,14 @@ class Transport:
                 # until someone calls authenticate() again.
                 if _is_permanent_rejection(cause):
                     self._forget(credentials)
+                    raise GoPaySDKError(
+                        "[GoPaySDK] Token refresh failed: the credentials were rejected. "
+                        "Call authenticate() again.",
+                        error_code=ErrorCode.AUTH_REFRESH_FAILED,
+                    ) from cause
                 raise GoPaySDKError(
-                    "[GoPaySDK] Token refresh failed. Call authenticate() again.",
+                    "[GoPaySDK] Token refresh failed. The credentials are kept and the next "
+                    "request tries again.",
                     error_code=ErrorCode.AUTH_REFRESH_FAILED,
                 ) from cause
 
@@ -235,12 +257,30 @@ class Transport:
         *,
         body: Any = None,
         headers: Optional[Mapping[str, str]] = None,
+        many: bool = False,
     ) -> Any:
-        """Send an authenticated API request and return the parsed JSON body.
+        """Send an authenticated API request and return the JSON object it answered with.
 
-        ``body=None`` sends no body. Returns ``None`` for a response without content.
+        ``body=None`` sends no body. With ``many=True`` the answer is a list of objects. Any
+        other 2xx body — empty included — raises ``UNEXPECTED_RESPONSE``: a method typed to
+        return ``PaymentDetails`` must not hand its caller ``None``.
         """
-        content = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        response = self._exchange(method, path, body=body, headers=headers)
+        return _json_body(response, many=many)
+
+    def delete(self, path: str) -> None:
+        """Send an authenticated ``DELETE``. The API answers ``204``; there is nothing to return."""
+        self._exchange("DELETE", path, body=None, headers=None)
+
+    def _exchange(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Any,
+        headers: Optional[Mapping[str, str]],
+    ) -> httpx.Response:
+        content = _encode(body)
 
         token = self._bearer()
         response = self._send(
@@ -274,9 +314,7 @@ class Transport:
                 method=method,
                 endpoint=normalize_endpoint(path),
             )
-        if response.status_code == 204 or not response.content:
-            return None
-        return _json(response)
+        return response
 
     def _headers(
         self, method: str, token: str, extra: Optional[Mapping[str, str]]
@@ -332,14 +370,40 @@ class Transport:
             self._http.close()
 
 
-def _json(response: httpx.Response) -> Any:
+def _encode(body: Any) -> Optional[bytes]:
+    if body is None:
+        return None
     try:
-        return response.json()
-    except ValueError as error:
+        # allow_nan=False: NaN and Infinity are not JSON, so they never reach the wire.
+        return json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as error:
         raise GoPaySDKError(
-            "[GoPaySDK] The API returned a response that is not valid JSON.",
-            error_code=ErrorCode.NETWORK_ERROR,
+            f"[GoPaySDK] The request body cannot be sent as JSON ({error}). "
+            "Dates go as ISO 8601 strings, e.g. date.isoformat().",
+            error_code=ErrorCode.INVALID_ARGUMENT,
         ) from error
+
+
+def _json_body(response: httpx.Response, *, many: bool) -> Any:
+    expected = "a JSON list of objects" if many else "a JSON object"
+    try:
+        data = response.json()  # an empty body raises too
+    except ValueError as error:
+        raise _unexpected_response(expected) from error
+    if many:
+        valid = isinstance(data, list) and all(isinstance(item, dict) for item in data)
+    else:
+        valid = isinstance(data, dict)
+    if not valid:
+        raise _unexpected_response(expected)
+    return data
+
+
+def _unexpected_response(expected: str) -> GoPaySDKError:
+    return GoPaySDKError(
+        f"[GoPaySDK] Failed to parse API response as {expected}.",
+        error_code=ErrorCode.UNEXPECTED_RESPONSE,
+    )
 
 
 def _is_permanent_rejection(error: GoPayError) -> bool:

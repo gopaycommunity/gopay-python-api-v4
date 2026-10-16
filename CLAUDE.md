@@ -53,11 +53,12 @@ src/gopay_payments/
 dependency). Never edit it by hand; if a model is wrong, fix the spec.
 
 ```bash
-SPEC_SOURCE=<url-or-path> uv run scripts/codegen.py
+SPEC_SOURCE='../gopay-payments-api-v4/spec/en/payments.yaml' uv run scripts/codegen.py
 ```
 
-`SPEC_SOURCE` is required. Models come from the **next spec** — the upcoming version, ahead of
-what api-docs.gopay.com publishes — which has two sources:
+`SPEC_SOURCE` is required: a local path or an `https://` URL (plain `http://` is refused — the
+spec becomes code in this repository). Models come from the **next spec** — the upcoming
+version, ahead of what api-docs.gopay.com publishes — which has two sources:
 
 1. **GoPay's internal pre-release feed**:
    `https://payments-api.beta.gopay.com/spec/en/payments.yaml`. Reachable only from inside
@@ -95,6 +96,10 @@ source.
   "v4" is there because v3 sends `GoPay Python <version>` and the version ranges overlap. The
   version comes from package metadata, which the release tag sets — there is no version
   constant to bump. `user_agent_suffix` is appended, never a replacement.
+- **Sync only.** There is no asyncio client: the v3 SDK is synchronous, and an async twin
+  would double every public method and its tests. httpx leaves the door open
+  (`httpx.AsyncClient`) without touching the models. The README points async callers at
+  `asyncio.to_thread`.
 - **Polling interval floor is 1 s.** The API asks to be polled about once a second; an
   `interval=0` once hammered the sandbox in a tight loop. Unit tests stub `_polling._pause`
   instead of lowering the floor.
@@ -102,10 +107,23 @@ source.
   charge must not go out twice — and not DELETE: cancel, stop and disable answer `409` to a
   repeat, so retrying one the API already did turns its success into an error (JS does retry
   DELETE; Python deliberately does not). A timeout is never retried.
-- **A failed token refresh forgets the credentials only when the token endpoint refused them**
-  (4xx other than 408/429). A timeout or 5xx keeps them, so a long-running worker recovers on
-  the next call. A second 401 on one endpoint drops the token, not the credentials. Both differ
-  from the JS server SDK, which clears everything.
+- **A failed token request forgets the credentials only when the token endpoint refused them**
+  (4xx other than 408/429) — in `authenticate()` and in a refresh alike. A timeout or 5xx
+  keeps them, so a long-running worker recovers on the next call. A second 401 on one endpoint
+  drops the token, not the credentials. Both differ from the JS server SDK, which clears
+  everything.
+- **Where Python follows PHP rather than JS:** `await_payment_status` also stops on
+  `AUTHORIZED` (PHP `PaymentPoller`; JS polls on), and `await_charge_state` hands out the 3-D
+  Secure URL — and lifts `initial_timeout` — only while `action.state` is `CREATED` or
+  `CHALLENGE_REQUIRED` (PHP `awaitsCustomer()`; JS does it on every `ACTION_REQUIRED`).
+- **A 2xx body must be what the method returns** — a JSON object, a list of objects for
+  `list_refunds()` — or the call raises `UNEXPECTED_RESPONSE` (PHP's code), an empty body
+  included. The DELETEs go through `Transport.delete()`, which ignores the body: the API
+  answers `204`. A request body `json.dumps` cannot encode (a `date`, NaN) is
+  `INVALID_ARGUMENT` before anything is sent.
+- **Secrets stay out of reprs.** `CachedToken.access_token` and `_Credentials.client_secret` are
+  `field(repr=False)`, and an unparseable token response is not chained to its decode error,
+  which keeps the whole body. `test_secrets_stay_out_of_logs_errors_and_reprs` guards this.
 - **A POST without a body still sends `Content-Type: application/json`** — the gateway
   answers 415 otherwise (`start_recurrence()` / `create_next_payment()` without overrides).
 - **Path segments** are percent-encoded with `quote(..., safe="")` and `.`/`..` are refused —
@@ -139,5 +157,6 @@ repository variable `GOPAY_PYPI_PUBLISH` is `true`.
 ## E2E
 
 `uv run pytest -m e2e` against the public sandbox needs a sandbox eshop's
-`GOPAY_PAYMENTS_V4_CLIENT_ID`, `_CLIENT_SECRET` and `_GOID`. Never commit them (`.env` is
-ignored). The suite refuses production, bounds every poll, and creates only payments it cancels.
+`GOPAY_PAYMENTS_V4_CLIENT_ID`, `_CLIENT_SECRET` and `_GOID`; `_BASE_URL` points it at another
+gateway (CI uses one inside GoPay's network). Never commit them (`.env` is ignored). The suite
+refuses production, bounds every poll, and creates only payments it cancels.

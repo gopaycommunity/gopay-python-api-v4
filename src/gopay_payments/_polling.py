@@ -39,6 +39,27 @@ class _Deadline:
         return interval if self._at is None else min(interval, self._at - _clock())
 
 
+# 3-D Secure states in which the customer has yet to visit the redirect URL. In the others
+# the authentication is over and the charge is being decided: a URL still present then
+# leads to a finished session.
+CUSTOMER_ACTION_STATES = frozenset({"CREATED", "CHALLENGE_REQUIRED"})
+
+
+def _customer_redirect(state: Mapping[str, object]) -> Optional[str]:
+    """The redirect URL while the charge waits on the customer's 3-D Secure step, else None.
+
+    As PHP's ``awaitsCustomer()``: a 3-D Secure state added to the spec later keeps the
+    poller polling instead of handing out a stale URL.
+    """
+    if state.get("state") != "ACTION_REQUIRED":
+        return None
+    action = state.get("action")
+    if not isinstance(action, Mapping) or action.get("state") not in CUSTOMER_ACTION_STATES:
+        return None
+    redirect = action.get("redirect_url")
+    return redirect if isinstance(redirect, str) and redirect else None
+
+
 class _RedirectNotifier:
     """Hands each distinct 3-D Secure redirect URL to the callback, once."""
 
@@ -46,10 +67,8 @@ class _RedirectNotifier:
         self._callback = callback
         self._last: Optional[str] = None
 
-    def notify(self, state: Mapping[str, object]) -> None:
-        action = state.get("action")
-        redirect = action.get("redirect_url") if isinstance(action, Mapping) else None
-        if not isinstance(redirect, str) or not redirect or redirect == self._last:
+    def notify(self, redirect: str) -> None:
+        if redirect == self._last:
             return
         self._last = redirect
         if self._callback is not None:
@@ -92,10 +111,11 @@ def await_charge(
     """Poll until the charge settles.
 
     Returns on ``SUCCEEDED``. Raises ``CHARGE_FAILED`` on ``FAILED`` (with the state on
-    ``charge_state``) and ``CHARGE_TIMEOUT`` when the charge has not left
-    ``REQUESTED``/``PROCESSING`` within ``initial_timeout``. The timeout stops applying
-    once ``ACTION_REQUIRED`` is seen: the customer may take as long as they need with 3-D
-    Secure. ``on_action_required`` fires once per distinct redirect URL.
+    ``charge_state``) and ``CHARGE_TIMEOUT`` when the charge is neither decided nor waiting
+    on the customer within ``initial_timeout``. The timeout stops applying once the charge
+    waits on the customer's 3-D Secure step (``ACTION_REQUIRED`` with the 3-D Secure state
+    ``CREATED`` or ``CHALLENGE_REQUIRED``): the customer may take as long as they need.
+    ``on_action_required`` fires once per distinct redirect URL, and only in those states.
     """
     _raise_if_cancelled(cancel, "Charge")
     deadline = _Deadline(initial_timeout)
@@ -109,9 +129,10 @@ def await_charge(
             raise GoPaySDKError(
                 "[GoPaySDK] Charge failed", error_code=ErrorCode.CHARGE_FAILED, charge_state=state
             )
-        if current == "ACTION_REQUIRED":
+        redirect = _customer_redirect(state)
+        if redirect is not None:
             deadline.lift()
-            redirects.notify(state)
+            redirects.notify(redirect)
         _wait(deadline, interval, cancel, what="Charge", timeout_error=_charge_timeout)
 
 

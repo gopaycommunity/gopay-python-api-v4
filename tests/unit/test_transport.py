@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable
+import datetime
+from typing import Any, Callable, cast
 
 import httpx
 import pytest
@@ -39,6 +40,47 @@ def test_post_without_a_body_still_declares_json(client: GoPayClient, gateway: F
     request = gateway.last()
     assert request.headers["content-type"] == "application/json"
     assert request.content == b""
+
+
+@pytest.mark.parametrize("method", ["start_recurrence", "create_next_payment"])
+def test_an_empty_override_is_sent_as_an_empty_object(
+    client: GoPayClient, gateway: FakeGateway, method: str
+) -> None:
+    # {} and no override are different requests: the API reads a body that is present.
+    action = "start" if method == "start_recurrence" else "next"
+    gateway.on("POST", f"/recurrences/5/{action}", reply(201, {"id": 9}))
+    getattr(client, method)("5", {})
+    assert gateway.last().content == b"{}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(datetime.date(2027, 1, 31), id="date"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="infinity"),
+        pytest.param({1, 2}, id="set"),
+    ],
+)
+def test_a_body_that_is_not_json_is_an_invalid_argument(
+    client: GoPayClient, gateway: FakeGateway, errors: ErrorLog, value: object
+) -> None:
+    params = cast(Any, {"amount": 100, "recurrence_date_to": value})
+    with pytest.raises(GoPaySDKError) as caught:
+        client.create_recurrence("8123456789", params)
+    assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT
+    assert isinstance(caught.value.__cause__, (TypeError, ValueError))
+    assert errors.errors == [caught.value]
+    assert gateway.api_requests() == []
+
+
+def test_a_circular_body_is_an_invalid_argument(client: GoPayClient, gateway: FakeGateway) -> None:
+    params: dict[str, Any] = {"amount": 100}
+    params["self"] = params
+    with pytest.raises(GoPaySDKError) as caught:
+        client.refund_payment("1", cast(Any, params))
+    assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT
+    assert gateway.api_requests() == []
 
 
 def test_post_sends_json(client: GoPayClient, gateway: FakeGateway) -> None:
@@ -148,12 +190,66 @@ def test_invalid_json_success_body(client: GoPayClient, gateway: FakeGateway) ->
     )
     with pytest.raises(GoPaySDKError) as caught:
         client.get_payment_status("1")
-    assert caught.value.error_code is ErrorCode.NETWORK_ERROR
+    assert caught.value.error_code is ErrorCode.UNEXPECTED_RESPONSE
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(reply(200), id="empty"),
+        pytest.param(reply(204), id="no-content"),
+        pytest.param(reply(200, text="OK"), id="text"),
+        pytest.param(httpx.Response(200, content=b"null"), id="null"),
+        pytest.param(reply(200, ["not", "an", "object"]), id="list"),
+        pytest.param(reply(200, "PAID"), id="string"),
+    ],
+)
+def test_a_2xx_without_a_json_object_is_an_unexpected_response(
+    client: GoPayClient, gateway: FakeGateway, errors: ErrorLog, answer: httpx.Response
+) -> None:
+    # The method is typed to return PaymentDetails; None or a list must not reach the caller.
+    gateway.on("GET", "/payments/1", answer)
+    with pytest.raises(GoPaySDKError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.error_code is ErrorCode.UNEXPECTED_RESPONSE
+    assert errors.errors == [caught.value]
+
+
+def test_an_empty_answer_to_a_post_is_an_unexpected_response(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    gateway.on("POST", "/payments/1/refunds", reply(201))
+    with pytest.raises(GoPaySDKError) as caught:
+        client.refund_payment("1", {"amount": 1})
+    assert caught.value.error_code is ErrorCode.UNEXPECTED_RESPONSE
+
+
+@pytest.mark.parametrize(
+    "body",
+    [pytest.param({"id": "r-1"}, id="object"), pytest.param([{"id": "r-1"}, 7], id="scalar-item")],
+)
+def test_a_list_endpoint_needs_a_list_of_objects(
+    client: GoPayClient, gateway: FakeGateway, body: object
+) -> None:
+    gateway.on("GET", "/payments/1/refunds", reply(200, body))
+    with pytest.raises(GoPaySDKError) as caught:
+        client.list_refunds("1")
+    assert caught.value.error_code is ErrorCode.UNEXPECTED_RESPONSE
+
+
+def test_an_empty_list_is_a_list(client: GoPayClient, gateway: FakeGateway) -> None:
+    gateway.on("GET", "/payments/1/refunds", reply(200, []))
+    assert client.list_refunds("1") == []
 
 
 def test_no_content_returns_none(client: GoPayClient, gateway: FakeGateway) -> None:
     gateway.on("DELETE", "/payments/1", reply(204))
     assert client.cancel_payment("1") is None
+
+
+def test_a_delete_ignores_whatever_body_it_gets(client: GoPayClient, gateway: FakeGateway) -> None:
+    gateway.on("DELETE", "/recurrences/rec-1", reply(200, text="Deleted"))
+    assert client.stop_recurrence("rec-1") is None
 
 
 def test_extra_headers_cannot_replace_reserved_ones(

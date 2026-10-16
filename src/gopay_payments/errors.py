@@ -20,7 +20,7 @@ class ErrorCode(str, Enum):
     The values are the same strings the PHP and JavaScript SDKs use.
     """
 
-    AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"
+    AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"  # noqa: S105 — an error code, not a secret
     """No access token is available — call ``authenticate()`` first."""
     AUTH_REFRESH_FAILED = "AUTH_REFRESH_FAILED"
     """Obtaining a new access token with the stored credentials failed."""
@@ -33,7 +33,10 @@ class ErrorCode(str, Enum):
     NETWORK_TIMEOUT = "NETWORK_TIMEOUT"
     """The request did not complete within the configured timeout."""
     NETWORK_ERROR = "NETWORK_ERROR"
-    """No usable response arrived (connection failure, malformed body)."""
+    """No response arrived: the connection failed or dropped."""
+    UNEXPECTED_RESPONSE = "UNEXPECTED_RESPONSE"
+    """The API answered 2xx with a body the SDK cannot use — empty, not JSON, or not the
+    JSON object (or list) the operation returns."""
     CHARGE_TIMEOUT = "CHARGE_TIMEOUT"
     """Polling gave up before the charge, payment, refund or recurrence settled."""
     CHARGE_FAILED = "CHARGE_FAILED"
@@ -95,3 +98,9 @@ class GoPayHTTPError(GoPayError):
         self.body = body
         self.method = method
         self.endpoint = endpoint
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # The default rebuilds an exception from its message alone, which this constructor
+        # does not take: without this, pickle and copy fail, and so does handing the error
+        # across a process boundary (Celery, ProcessPoolExecutor).
+        return (type(self), (self.status, self.body), self.__dict__)
