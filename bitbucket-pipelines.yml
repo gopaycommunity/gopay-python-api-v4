@@ -28,6 +28,18 @@ definitions:
         artifacts:
           - coverage.xml
 
+    - step: &test-315
+        name: Unit tests (Python 3.15)
+        # The pinned uv has no 3.15.0 build to download, so this step runs on the official
+        # image and uses its interpreter. Fold it into the loop above once uv is bumped to a
+        # release that has one.
+        image: python:3.15-slim
+        caches:
+          - uv
+        script:
+          - pip install --quiet "uv==0.12.23"
+          - uv run --frozen --python-preference only-system --python 3.15 pytest -q -p no:cacheprovider
+
     - step: &e2e
         name: E2E
         # Self-hosted, inside GoPay's network, like the PHP SDK's E2E step: the gateway the
@@ -69,38 +81,45 @@ definitions:
                 -Dsonar.sources=src
                 -Dsonar.exclusions=src/gopay_payments/_generated.py
                 -Dsonar.tests=tests
-                -Dsonar.python.version=3.9,3.10,3.11,3.12,3.13,3.14
+                -Dsonar.python.version=3.9,3.10,3.11,3.12,3.13,3.14,3.15
                 -Dsonar.python.coverage.reportPaths=coverage.xml
           - pipe: sonarsource/sonarcloud-quality-gate:0.2.0
 
     - step: &release-preview
         name: Release preview (dry-run)
-        image: node:22-bookworm
+        # Pinned by digest, like the release tools in package-lock.json: the release step
+        # below holds the push token, and this one checks exactly what it will run.
+        image: &node-image node:22.23.3-bookworm@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
         clone:
           depth: full
         script:
+          - npm ci --ignore-scripts --no-audit --no-fund
           # --branches: the config releases only from master, so without it the dry-run would
           # report "not a release branch" on every PR and check nothing.
-          - npx --yes -p semantic-release@25.0.9 -p @semantic-release/commit-analyzer@13.0.1 -p @semantic-release/release-notes-generator@14.1.1 -p @semantic-release/changelog@7.0.0 -p @semantic-release/git@11.0.1 -p conventional-changelog-conventionalcommits@9.3.1 semantic-release --dry-run --no-ci --branches "$BITBUCKET_BRANCH"
+          - ./node_modules/.bin/semantic-release --dry-run --no-ci --branches "$BITBUCKET_BRANCH"
 
     - step: &release
         name: Release
-        image: node:22-bookworm
+        image: *node-image
         deployment: production
         clone:
           depth: full
         script:
-          - git remote set-url origin https://gopay-release-bot:$BITBUCKET_BOT_PUSH_TOKEN@bitbucket.org/$BITBUCKET_REPO_FULL_NAME.git
-          # Pinned: this step holds the push token, so nothing in it may float to a new release.
+          # This step holds the push token, so nothing in it may float to a new release: the
+          # image is pinned by digest and every package, transitive ones included, by
+          # package-lock.json. --ignore-scripts: no package runs code at install time.
           # The preset stays on 9.x: 10.x needs conventional-changelog-writer 9, while the
           # semantic-release plugins still bring writer 8.
-          - npx --yes -p semantic-release@25.0.9 -p @semantic-release/commit-analyzer@13.0.1 -p @semantic-release/release-notes-generator@14.1.1 -p @semantic-release/changelog@7.0.0 -p @semantic-release/git@11.0.1 -p conventional-changelog-conventionalcommits@9.3.1 semantic-release
+          - npm ci --ignore-scripts --no-audit --no-fund
+          # The token goes into the remote only after the install.
+          - git remote set-url origin https://gopay-release-bot:$BITBUCKET_BOT_PUSH_TOKEN@bitbucket.org/$BITBUCKET_REPO_FULL_NAME.git
+          - ./node_modules/.bin/semantic-release
         artifacts:
           - CHANGELOG.md
 
     - step: &github-sync
         name: Mirror to GitHub
-        image: node:22-bookworm
+        image: *node-image
         clone:
           depth: full
         script:
@@ -125,6 +144,7 @@ pipelines:
       - parallel:
           - step: *lint
           - step: *test
+          - step: *test-315
           - step: *e2e
           - step: *audit
       - step: *sonar
@@ -135,6 +155,7 @@ pipelines:
       - parallel:
           - step: *lint
           - step: *test
+          - step: *test-315
           - step: *e2e
           - step: *audit
       - step: *sonar

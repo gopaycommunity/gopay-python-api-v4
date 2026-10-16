@@ -28,6 +28,10 @@ the only thing that proves 3.9 still works:
 uv run --isolated --python 3.9 --with . --with pytest python -m pytest -q
 ```
 
+CI runs the unit suite on 3.9–3.14 through uv, and on 3.15 in a step of its own on the
+`python:3.15-slim` image: the pinned uv (0.12.23) has no 3.15.0 build to download. Fold 3.15
+back into the loop once uv is bumped to a release that has one.
+
 ## Architecture
 
 ```
@@ -148,6 +152,12 @@ semantic-release on `master` (`release.config.mjs`), tags without a `v`. `feat:`
 `fix:` → patch, breaking → major. Do not write the words "breaking change" in a commit body
 unless you mean it: the analyzer reads them as a major release. Telemetry, logging, examples
 and docs-only fixes are `fix:`, not `feat:`.
+
+The release tools are pinned in `package.json` and `package-lock.json` and installed with
+`npm ci --ignore-scripts` in a digest-pinned node image, because the release step holds the
+push token. Update them with `npm install --ignore-scripts` and commit the lock. The
+conventionalcommits preset stays on 9.x: 10.x needs conventional-changelog-writer 9, while the
+semantic-release plugins still bring writer 8.
 
 The tag is the version (hatch-vcs). Bitbucket mirrors `master` and tags to
 `github.com/gopaycommunity/gopay-python-api-v4`, where `.github/workflows/pypi-publish.yml`

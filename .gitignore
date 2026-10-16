@@ -15,7 +15,7 @@ coverage.xml
 htmlcov/
 *.log
 
-# semantic-release runs through npx in CI
+# semantic-release (package.json), installed with npm ci in CI
 node_modules/
 
 # Codegen staging (scripts/codegen.py)

@@ -1,6 +1,10 @@
 # Publishes gopay-payments-v4 to PyPI from a release tag.
 # Tags come from the Bitbucket "Mirror to GitHub" step; semantic-release creates them as <x.y.z>.
 # Trusted publishing (OIDC) only — never add a PYPI_TOKEN secret.
+#
+# Two jobs, so that the build backend (hatchling, hatch-vcs) and twine never run where a PyPI
+# token can be minted: `build` has no id-token permission and hands its files over as an
+# artifact; `publish` has id-token: write and does nothing but upload them.
 
 name: Publish to PyPI
 
@@ -29,23 +33,18 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  UV_VERSION: "0.12.23"
+
 jobs:
-  publish:
-    name: Publish ${{ inputs.tag || github.ref_name }}
+  build:
+    name: Build ${{ inputs.tag || github.ref_name }}
     # `create` also fires for branches; only release tags are published.
     if: github.event_name != 'create' || github.ref_type == 'tag'
     runs-on: ubuntu-latest
-    # The PyPI trusted publisher is registered for this workflow and this environment.
-    environment: pypi
     permissions:
       contents: read
-      id-token: write
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
-      DRY_RUN: ${{ inputs.dry-run || false }}
-      # Gates the publish step, not the job, so disarmed runs still build and verify.
-      ARMED: ${{ vars.GOPAY_PYPI_PUBLISH == 'true' }}
-      UV_VERSION: "0.12.23"
     steps:
       # Before checkout, so a bad dispatch input is rejected before use as a git ref.
       - name: Validate tag
@@ -56,7 +55,7 @@ jobs:
             exit 1
           fi
 
-      # Pinned to SHA, not tag: this job mints an OIDC token and a tag can be moved.
+      # Actions are pinned to a SHA, not a tag: a tag can be moved.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: refs/tags/${{ env.TAG }}
@@ -74,14 +73,44 @@ jobs:
         run: |
           set -euo pipefail
           expected="dist/gopay_payments_v4-${TAG}-py3-none-any.whl"
+          built=$(printf '%s ' dist/*)
           if [ ! -f "$expected" ]; then
-            echo "::error::Expected $expected, built: $(ls dist)"
+            echo "::error::Expected $expected, built: $built"
             exit 1
           fi
-          echo "Built $(ls dist | tr '\n' ' ')"
+          echo "Built $built"
 
       - name: Check distributions
-        run: ~/.local/bin/uvx --from "twine>=6" twine check --strict dist/*
+        run: ~/.local/bin/uvx --from "twine==7.0.0" twine check --strict dist/*
+
+      - name: Hand the distributions to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish ${{ inputs.tag || github.ref_name }}
+    needs: build
+    runs-on: ubuntu-latest
+    # The PyPI trusted publisher is registered for this workflow and this environment.
+    environment: pypi
+    permissions:
+      id-token: write
+    env:
+      DRY_RUN: ${{ inputs.dry-run || false }}
+      # Gates the publish step, not the job, so disarmed runs still build and verify.
+      ARMED: ${{ vars.GOPAY_PYPI_PUBLISH == 'true' }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install uv
+        run: python3 -m pip install --user "uv==${UV_VERSION}"
 
       - name: Publish (dry run)
         if: env.DRY_RUN == 'true' || env.ARMED != 'true'
