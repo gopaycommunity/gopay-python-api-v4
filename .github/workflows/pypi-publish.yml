@@ -4,7 +4,8 @@
 #
 # Two jobs, so that the build backend (hatchling, hatch-vcs) and twine never run where a PyPI
 # token can be minted: `build` has no id-token permission and hands its files over as an
-# artifact; `publish` has id-token: write and does nothing but upload them.
+# artifact; `publish` has id-token: write and only uploads them, with an action pinned to a SHA
+# and nothing installed from PyPI.
 
 name: Publish to PyPI
 
@@ -109,15 +110,15 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Install uv
-        run: python3 -m pip install --user "uv==${UV_VERSION}"
-
       - name: Publish (dry run)
         if: env.DRY_RUN == 'true' || env.ARMED != 'true'
         run: |
           echo "::warning::NOT published — dry run or GOPAY_PYPI_PUBLISH is not 'true'. Built and checked $TAG only."
 
-      # --check-url skips files PyPI already has, so a re-delivered tag is harmless.
+      # Nothing is installed in this job: the PyPA action ships its own pinned tooling, and the
+      # action itself is pinned to a commit SHA. skip-existing keeps a re-delivered tag harmless.
       - name: Publish to PyPI
         if: env.DRY_RUN != 'true' && env.ARMED == 'true'
-        run: ~/.local/bin/uv publish --trusted-publishing always --check-url https://pypi.org/simple/
+        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2
+        with:
+          skip-existing: true
