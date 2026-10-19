@@ -390,6 +390,8 @@ def _json_body(response: httpx.Response, *, many: bool) -> Any:
     try:
         data = response.json()  # an empty body raises too
     except ValueError as error:
+        # Chained, unlike the token response in _fetch_token: an API response holds no bearer
+        # token, and the decode error is what tells a developer what the API sent.
         raise _unexpected_response(expected) from error
     if many:
         valid = isinstance(data, list) and all(isinstance(item, dict) for item in data)

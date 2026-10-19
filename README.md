@@ -155,7 +155,8 @@ final = client.await_payment_status(payment_id)         # PAID, CANCELED, TIMEOU
 
 `await_payment_status()` has no timeout of its own — the API ends an unpaid payment on its own
 schedule. Pass `timeout=` (seconds) for a client-side ceiling. It also returns on `AUTHORIZED`:
-a pre-authorized payment waits for you to capture it, not for the poller.
+a pre-authorized payment waits for the capture, not for the poller. The v4 SDK has no capture
+operation yet (see [MIGRATION.md](MIGRATION.md)).
 
 ## API
 
@@ -270,7 +271,7 @@ Every error the SDK raises is a `GoPayError`:
 |---|---|
 | `AUTH_TOKEN_MISSING` | no token — call `authenticate()` |
 | `AUTH_REFRESH_FAILED` | replacing an expired token failed — see below whether to call `authenticate()` again |
-| `AUTH_INVALID_RESPONSE` | the token response was incomplete |
+| `AUTH_INVALID_RESPONSE` | the token response was not JSON, or incomplete |
 | `AUTH_CREDENTIALS_MISSING` | `get_browser_keys()` without a shareable key or authentication |
 | `AUTH_UNAUTHORIZED` | a fresh token was rejected — usually a missing scope |
 | `NETWORK_TIMEOUT` | the request timed out |

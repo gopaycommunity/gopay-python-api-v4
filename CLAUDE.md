@@ -14,8 +14,8 @@ The v3 SDK (`gopay`, repo `gopay-python-api`) is a separate package and stays as
 
 ```bash
 uv sync
-uv run ruff format --check src tests scripts
-uv run ruff check src tests scripts
+uv run ruff format --check src tests scripts examples
+uv run ruff check src tests scripts examples
 uv run mypy
 uv run pytest                    # unit tests; e2e is deselected by default
 uv run pytest -m e2e             # live tests, needs GOPAY_PAYMENTS_V4_* (tests/e2e/conftest.py)

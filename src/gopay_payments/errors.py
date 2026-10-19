@@ -17,7 +17,8 @@ from typing import Any, Optional
 class ErrorCode(str, Enum):
     """Machine-readable reason carried by :class:`GoPaySDKError`.
 
-    The values are the same strings the PHP and JavaScript SDKs use.
+    The values are the strings the PHP SDK uses, and the JavaScript SDK the ones that apply to
+    a server. ``UNEXPECTED_RESPONSE`` exists only in PHP and here.
     """
 
     # An error code, not a secret: the S105 check takes any *TOKEN* name for one.
@@ -26,7 +27,8 @@ class ErrorCode(str, Enum):
     AUTH_REFRESH_FAILED = "AUTH_REFRESH_FAILED"
     """Obtaining a new access token with the stored credentials failed."""
     AUTH_INVALID_RESPONSE = "AUTH_INVALID_RESPONSE"
-    """The token endpoint answered without the fields a token needs."""
+    """The token endpoint answered with something that is not a token: not JSON, or without
+    the fields a token needs."""
     AUTH_CREDENTIALS_MISSING = "AUTH_CREDENTIALS_MISSING"
     """The operation needs credentials or a shareable key the client does not have."""
     AUTH_UNAUTHORIZED = "AUTH_UNAUTHORIZED"

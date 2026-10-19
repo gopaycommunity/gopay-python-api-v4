@@ -13,11 +13,23 @@ from .conftest import REAL_CLOCK, REAL_PAUSE, ErrorLog, FakeGateway, PollClock, 
 CHARGE = "/payments/42/charge"
 
 
-def charge(state: str, redirect: str = "", emv3ds: str = "CHALLENGE_REQUIRED") -> Any:
+NO_ACTION = object()
+
+
+def charge(state: str, redirect: Any = NO_ACTION, emv3ds: str = "CHALLENGE_REQUIRED") -> Any:
     body: dict[str, Any] = {"id": "42", "state": state, "return_url": "https://shop.example/r"}
-    if redirect:
+    if redirect is not NO_ACTION:
         body["action"] = {"action_type": "EMV3DS", "state": emv3ds, "redirect_url": redirect}
     return reply(200, body)
+
+
+def stuck_then_done(*stuck: Any) -> list[Any]:
+    """Replies that stay unsettled for a long while, then settle.
+
+    A test that expects CHARGE_TIMEOUT uses these so that a regression, polling past the
+    timeout, ends in SUCCEEDED and fails the assert instead of looping forever.
+    """
+    return [*stuck * 30, charge("SUCCEEDED")]
 
 
 def test_charge_returns_on_succeeded_and_reports_each_redirect_once(
@@ -132,7 +144,11 @@ def test_a_finished_3ds_step_is_not_handed_out(
 def test_a_finished_3ds_step_keeps_the_initial_timeout(
     client: GoPayClient, gateway: FakeGateway, emv3ds: str
 ) -> None:
-    gateway.on("GET", CHARGE, charge("ACTION_REQUIRED", "https://acs.example/a", emv3ds=emv3ds))
+    gateway.on(
+        "GET",
+        CHARGE,
+        *stuck_then_done(charge("ACTION_REQUIRED", "https://acs.example/a", emv3ds=emv3ds)),
+    )
     with pytest.raises(GoPaySDKError) as caught:
         client.await_charge_state("42", interval=1, initial_timeout=5)
     assert caught.value.error_code is ErrorCode.CHARGE_TIMEOUT
@@ -141,10 +157,25 @@ def test_a_finished_3ds_step_keeps_the_initial_timeout(
 def test_action_required_without_a_redirect_keeps_the_initial_timeout(
     client: GoPayClient, gateway: FakeGateway
 ) -> None:
-    gateway.on("GET", CHARGE, charge("ACTION_REQUIRED"))
+    gateway.on("GET", CHARGE, *stuck_then_done(charge("ACTION_REQUIRED")))
     with pytest.raises(GoPaySDKError) as caught:
         client.await_charge_state("42", interval=1, initial_timeout=5)
     assert caught.value.error_code is ErrorCode.CHARGE_TIMEOUT
+
+
+@pytest.mark.parametrize("redirect", ["", None, 5, ["https://acs.example/a"]])
+@pytest.mark.parametrize("emv3ds", ["CREATED", "CHALLENGE_REQUIRED"])
+def test_an_unusable_redirect_url_is_not_handed_out_and_keeps_the_timeout(
+    client: GoPayClient, gateway: FakeGateway, emv3ds: str, redirect: Any
+) -> None:
+    gateway.on("GET", CHARGE, *stuck_then_done(charge("ACTION_REQUIRED", redirect, emv3ds=emv3ds)))
+    redirects: list[str] = []
+    with pytest.raises(GoPaySDKError) as caught:
+        client.await_charge_state(
+            "42", on_action_required=redirects.append, interval=1, initial_timeout=5
+        )
+    assert caught.value.error_code is ErrorCode.CHARGE_TIMEOUT
+    assert redirects == []
 
 
 def test_charge_polling_can_be_cancelled(client: GoPayClient, gateway: FakeGateway) -> None:
