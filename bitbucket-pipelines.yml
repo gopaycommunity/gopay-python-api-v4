@@ -44,9 +44,11 @@ definitions:
         name: E2E
         # Self-hosted, inside GoPay's network, like the PHP SDK's E2E step: the gateway the
         # repository variables point at is not reachable from Bitbucket's cloud runners
-        # (connect timeout on the first run). The runner has one slot, so expect queueing.
+        # (connect timeout on the first run).
         runs-on:
-          - cypress
+          - self.hosted
+          - linux
+          - gopay.dev.2x
         caches:
           - uv
         script:
