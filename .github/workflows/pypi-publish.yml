@@ -28,7 +28,9 @@ on:
         type: boolean
 
 concurrency:
-  group: pypi-publish
+  # Per tag: the mirror can push several tags in a row, and a newer run in the same group cancels
+  # one still pending. Two runs for one tag (create and a dispatch) still queue.
+  group: pypi-publish-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:

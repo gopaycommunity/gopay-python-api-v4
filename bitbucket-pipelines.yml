@@ -125,15 +125,19 @@ definitions:
         clone:
           depth: full
         script:
-          # Off until github.com/gopaycommunity/gopay-python-api-v4 exists and has this
-          # repository's SSH key as a deploy key; then set GITHUB_MIRROR_ENABLED=true.
+          # Off until github.com/gopaycommunity/gopay-python-api-v4 has this repository's SSH key
+          # (Repository settings → Pipelines → SSH keys, github.com under Known hosts) as a deploy
+          # key with write access; then set GITHUB_MIRROR_ENABLED=true.
           - if [ "${GITHUB_MIRROR_ENABLED:-}" != "true" ]; then echo "GitHub mirror disabled — skipping."; exit 0; fi
           - git fetch origin master --tags
           - git remote add github git@github.com:gopaycommunity/gopay-python-api-v4.git
           - git push github refs/remotes/origin/master:refs/heads/master --force
-          # One tag per push: GitHub emits no create event for a push carrying more than three
-          # tags, and the PyPI workflow runs on create.
-          - for t in $(git tag --points-at refs/remotes/origin/master); do git push github "refs/tags/$t"; done
+          # Every tag on master that GitHub does not have yet, not just the one at the tip, so a
+          # tag from a run that never got here follows with the next one. One tag per push: GitHub
+          # emits no create event for a push carrying more than three tags, and the PyPI workflow
+          # runs on create — so each tag pushed here is published while GOPAY_PYPI_PUBLISH is on.
+          - git ls-remote --tags --refs github | cut -f2 > github-tags.txt
+          - for t in $(git tag --merged refs/remotes/origin/master --sort=v:refname); do grep -qxF "refs/tags/$t" github-tags.txt || git push github "refs/tags/$t" || exit 1; done
 
   services:
     docker2x:
