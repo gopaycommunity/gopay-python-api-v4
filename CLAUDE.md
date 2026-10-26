@@ -145,6 +145,12 @@ source.
   server's request.
 - **README describes behaviour only** — no token lifetimes, grant names or 3-D Secure timeout
   numbers. "Redirect immediately", never "within N seconds".
+- **Release notes link to the GitHub mirror, and a guard holds them to it.** `release.config.mjs`
+  points the commit and compare links at `gopaycommunity/gopay-python-api-v4` instead of the
+  Bitbucket origin, and an inline plugin fails the release when the notes name Bitbucket, Jira
+  or an internal GoPay environment (the spec feed above among them). The notes become
+  `CHANGELOG.md`, which ships in the sdist, and the body of the mirrored release commit, so
+  both are public. When the guard stops a release, reword the commit; never drop the guard.
 
 ## Release
 
@@ -162,7 +168,13 @@ semantic-release plugins still bring writer 8.
 The tag is the version (hatch-vcs). Bitbucket mirrors `master` and tags to
 `github.com/gopaycommunity/gopay-python-api-v4`, where `.github/workflows/pypi-publish.yml`
 publishes to PyPI through trusted publishing (no token). Publishing runs only when the GitHub
-repository variable `GOPAY_PYPI_PUBLISH` is `true`.
+repository variable `GOPAY_PYPI_PUBLISH` is `true`. The mirror step pushes every tag on master
+that GitHub lacks, one per push, and every tag that reaches GitHub while publishing is on gets
+published.
+
+**1.0.0 predates the GitHub links.** Its `CHANGELOG.md` (in its sdist too) and the body of its
+release commit still name the Bitbucket repository. That was accepted; every later release
+links to GitHub only.
 
 ## E2E
 
