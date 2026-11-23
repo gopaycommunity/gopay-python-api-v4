@@ -125,10 +125,9 @@ definitions:
         clone:
           depth: full
         script:
-          # Off until github.com/gopaycommunity/gopay-python-api-v4 has this repository's SSH key
-          # (Repository settings → Pipelines → SSH keys, github.com under Known hosts) as a deploy
-          # key with write access; then set GITHUB_MIRROR_ENABLED=true.
-          - if [ "${GITHUB_MIRROR_ENABLED:-}" != "true" ]; then echo "GitHub mirror disabled — skipping."; exit 0; fi
+          # Pushes with this repository's SSH key (Repository settings → Pipelines → SSH keys,
+          # github.com under Known hosts), a deploy key with write access on the GitHub mirror —
+          # the same as the other v4 SDK mirrors.
           - git fetch origin master --tags
           - git remote add github git@github.com:gopaycommunity/gopay-python-api-v4.git
           - git push github refs/remotes/origin/master:refs/heads/master --force
