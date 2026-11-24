@@ -13,7 +13,9 @@ import httpx
 from typing_extensions import Concatenate, Literal, ParamSpec, Self, TypedDict
 
 from . import _correlation, _polling
+from ._events import GoPayEvent
 from ._generated import (
+    JWKSet,
     LinkCreateRequest,
     LinkDetails,
     PaymentChargeInput,
@@ -38,6 +40,7 @@ from ._validate import (
     require_path_segment,
 )
 from ._version import USER_AGENT
+from ._webhooks import PUBLIC_KEYS_PATH, SignatureHeader, WebhookBody, Webhooks
 from .environment import Environment, parse_environment
 from .errors import ErrorCode, GoPayError, GoPaySDKError
 from .token_cache import TokenCache
@@ -163,6 +166,7 @@ class GoPayClient:
                 token_cache=token_cache,
                 on_error=on_error,
             )
+            self._webhooks = Webhooks(self._transport)
         except GoPayError as error:
             # Construction errors happen before any method exists to report them, and are
             # the one kind guaranteed to happen at start-up.
@@ -531,6 +535,44 @@ class GoPayClient:
         """
         lid = require_path_segment(link_id, "link_id")
         self._transport.delete(f"/eshops/{_goid(goid)}/links/{lid}")
+
+    # ------------------------------------------------------------------ webhooks
+
+    @_public
+    def verify_webhook(
+        self, raw_body: WebhookBody, signature_header: SignatureHeader
+    ) -> GoPayEvent:
+        """Check that a webhook comes from GoPay and return its event.
+
+        Pass the body exactly as received — Django ``request.body``, Flask
+        ``request.get_data()`` — and the ``X-GoPay-Signature`` header. The signature covers
+        the bytes, so a body parsed and serialised again no longer verifies.
+
+        Needs the ``shared:read`` OAuth2 scope, for the signing keys, and the ``webhooks``
+        extra (``pip install 'gopay-payments-v4[webhooks]'``). The keys are cached by ``kid``,
+        refreshed once an hour, and refetched for a ``kid`` not in the cache at most every 10
+        seconds.
+
+        Raises :class:`GoPaySDKError` with ``WEBHOOK_INVALID`` — answer it with a 4xx — when
+        the request is not a webhook GoPay signed. Answer anything else with a 5xx, so GoPay
+        sends the webhook again: ``WEBHOOK_KEYS_UNAVAILABLE`` when the keys could not be
+        loaded, ``INVALID_ARGUMENT`` for a parsed body, ``INVALID_CONFIG`` without the extra.
+        Neither ``WEBHOOK_*`` code reaches ``on_error``, as anyone who can reach the endpoint
+        can cause one; a failed key request does, once per attempt.
+
+        An event of a type this SDK version does not know comes back as sent — check
+        :func:`is_known_event` before relying on its ``data``.
+        """
+        return self._webhooks.verify(raw_body, signature_header)
+
+    @_public
+    def get_webhook_public_keys(self) -> JWKSet:
+        """Return the keys GoPay signs webhooks with, as a JWK Set.
+        ``GET /webhooks/public-keys`` (scope ``shared:read``)
+
+        :meth:`verify_webhook` fetches them on its own; this is for verifying elsewhere.
+        """
+        return cast(JWKSet, self._transport.request("GET", PUBLIC_KEYS_PATH))
 
     # --------------------------------------------------------------- recurrences
 

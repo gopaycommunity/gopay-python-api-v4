@@ -42,12 +42,19 @@ RETRIED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 OnError = Callable[[GoPayError], object]
 
 
+# Anyone who can reach a webhook endpoint can cause these, so monitoring must not hear of
+# them. A key fetch that failed is reported, once per attempt, where it happens.
+NEVER_REPORTED = frozenset({ErrorCode.WEBHOOK_INVALID, ErrorCode.WEBHOOK_KEYS_UNAVAILABLE})
+
+
 def report(on_error: Optional[OnError], error: GoPayError) -> None:
     """Hand ``error`` to ``on_error``, once, whatever happens inside the callback."""
     if error._reported:
         return
     error._reported = True
-    if on_error is None:
+    if on_error is None or (
+        isinstance(error, GoPaySDKError) and error.error_code in NEVER_REPORTED
+    ):
         return
     try:
         on_error(error)

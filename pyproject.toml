@@ -35,6 +35,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.optional-dependencies]
+# RSA for verify_webhook(). Optional: an integration that never receives webhooks should not
+# have to install it.
+webhooks = ["cryptography>=42"]
+
 [project.urls]
 Homepage = "https://github.com/gopaycommunity/gopay-python-api-v4"
 Documentation = "https://api-docs.gopay.com/"
@@ -42,6 +47,7 @@ Changelog = "https://github.com/gopaycommunity/gopay-python-api-v4/blob/master/C
 
 [dependency-groups]
 dev = [
+    "cryptography>=42",
     "mypy>=1.13",
     "pytest>=8",
     "pytest-cov>=5",
