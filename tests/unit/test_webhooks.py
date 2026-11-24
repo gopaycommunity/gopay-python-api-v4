@@ -626,12 +626,13 @@ def test_on_error_does_not_hear_of_forged_webhooks(
     key_b: SigningKey,
 ) -> None:
     keys.serve(key_a)
-    forged = key_b.sign(event(), {"alg": "RS256", "kid": "test-a"})
-    unknown_kid = key_b.sign(event())
+    body = event()
+    forged = key_b.sign(body, {"alg": "RS256", "kid": "test-a"})
+    unknown_kid = key_b.sign(body)
     for _ in range(2):
         for header in (forged, unknown_kid, "garbage"):
             with pytest.raises(GoPaySDKError):
-                client.verify_webhook(event(), header)
+                client.verify_webhook(body, header)
         clock.now += 10  # throttled and not
     assert errors.errors == []
 
@@ -640,14 +641,15 @@ def test_on_error_hears_of_a_key_set_with_no_usable_key_once_per_attempt(
     client: GoPayClient, keys: KeyServer, clock: Clock, errors: ErrorLog, key_a: SigningKey
 ) -> None:
     keys.serve({**key_a.jwk, "use": "enc"})
+    body, header = event(), key_a.sign(event())
     for _ in range(3):
         with pytest.raises(GoPaySDKError):
-            client.verify_webhook(event(), key_a.sign(event()))
+            client.verify_webhook(body, header)
     assert [e.error_code for e in errors.errors] == [ErrorCode.UNEXPECTED_RESPONSE]  # type: ignore[attr-defined]
     assert errors.errors[0].trace_id is not None
     clock.now += 10
     with pytest.raises(GoPaySDKError):
-        client.verify_webhook(event(), key_a.sign(event()))
+        client.verify_webhook(body, header)
     assert len(errors.errors) == 2
 
 
@@ -655,9 +657,10 @@ def test_on_error_hears_of_a_failed_key_request_once_per_attempt(
     client: GoPayClient, keys: KeyServer, errors: ErrorLog, key_a: SigningKey
 ) -> None:
     keys.fail(500)
+    body, header = event(), key_a.sign(event())
     for _ in range(3):
         with pytest.raises(GoPaySDKError):
-            client.verify_webhook(event(), key_a.sign(event()))
+            client.verify_webhook(body, header)
     assert len(errors.errors) == 1
     assert isinstance(errors.errors[0], GoPayHTTPError)
 

@@ -31,6 +31,10 @@ def ids_of(request: httpx.Request) -> tuple[str, str]:
     return request.headers[TRACE], request.headers[TRANSACTION]
 
 
+def ids_on(error: GoPayError) -> tuple[object, object]:
+    return error.trace_id, error.transaction_id
+
+
 # ----------------------------------------------------------------- the headers
 
 
@@ -264,7 +268,7 @@ def test_an_http_error_carries_the_ids_of_its_request(
     gateway.on("GET", "/payments/1", reply(404, {"errors": [{"error_code": 404}]}))
     with pytest.raises(GoPayHTTPError) as caught:
         client.get_payment_status("1")
-    assert (caught.value.trace_id, caught.value.transaction_id) == ids_of(gateway.last())
+    assert ids_on(caught.value) == ids_of(gateway.last())
 
 
 @pytest.mark.parametrize(
@@ -281,7 +285,7 @@ def test_an_error_without_a_response_still_carries_the_ids(
     with pytest.raises(GoPaySDKError) as caught:
         client.get_payment_status("1")
     assert caught.value.error_code is code
-    assert (caught.value.trace_id, caught.value.transaction_id) == ids_of(gateway.last())
+    assert ids_on(caught.value) == ids_of(gateway.last())
 
 
 def test_an_unusable_body_carries_the_ids(client: GoPayClient, gateway: FakeGateway) -> None:
@@ -309,7 +313,7 @@ def test_a_failed_refresh_carries_the_ids_of_the_token_request(
         client.get_payment_status("1")
     assert caught.value.error_code is ErrorCode.AUTH_REFRESH_FAILED
     refresh = gateway.token_requests()[-1]
-    assert (caught.value.trace_id, caught.value.transaction_id) == ids_of(refresh)
+    assert ids_on(caught.value) == ids_of(refresh)
     assert gateway.api_requests() == []
 
 
@@ -343,7 +347,7 @@ def test_the_ids_survive_pickle(client: GoPayClient, gateway: FakeGateway) -> No
     with pytest.raises(GoPayError) as caught:
         client.get_payment_status("1")
     clone = pickle.loads(pickle.dumps(caught.value))  # noqa: S301 — our own object
-    assert (clone.trace_id, clone.transaction_id) == ids_of(gateway.last())
+    assert ids_on(clone) == ids_of(gateway.last())
 
 
 # ------------------------------------------------------------------ debug log

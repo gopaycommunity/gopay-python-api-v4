@@ -264,8 +264,9 @@ def test_an_empty_page_naming_a_next_one_stops_the_paging(
     gateway.on("GET", EVENTS, page(ev(1), next_query="prev_item=a"))
     gateway.on("GET", f"{EVENTS}?prev_item=a", page(next_query="prev_item=b"))
     seen: list[str] = []
+    events = client.iter_events("8123456789")
     with pytest.raises(GoPaySDKError, match="empty page") as caught:
-        collect(client.iter_events("8123456789"), seen)
+        collect(events, seen)
     assert seen == ["evt-1"]
     assert caught.value.error_code is ErrorCode.UNEXPECTED_RESPONSE
     assert len(gateway.api_requests()) == 2
