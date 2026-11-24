@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import sys
 import threading
@@ -93,9 +94,17 @@ class KeyServer:
         self.gateway = gateway
         self.answer: Callable[[], httpx.Response] = lambda: reply(200, CAPTURED["jwks"])
         self.delay = 0.0
+        # Set to hold a fetch open: ``entered`` fires once it is in flight, and it answers
+        # once ``release`` is set (or after 5 s, so a broken test fails instead of hanging).
+        self.entered: Optional[threading.Event] = None
+        self.release: Optional[threading.Event] = None
         gateway.on("GET", KEYS_PATH, self._handle)
 
     def _handle(self, _request: httpx.Request) -> httpx.Response:
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            self.release.wait(5)
         if self.delay:
             time.sleep(self.delay)
         return self.answer()
@@ -474,6 +483,32 @@ def test_the_key_request_is_sent_once_not_retried(
         ErrorCode.WEBHOOK_KEYS_UNAVAILABLE,
     )
     assert keys.fetches == 1
+
+
+def test_a_known_fresh_key_does_not_wait_for_a_refetch_someone_else_started(
+    client: GoPayClient, keys: KeyServer, clock: Clock, key_a: SigningKey, key_b: SigningKey
+) -> None:
+    keys.serve(key_a)
+    body = event()
+    genuine, made_up_kid = key_a.sign(body), key_b.sign(body)
+    client.verify_webhook(body, genuine)
+    clock.now += 10  # an unknown kid may refetch again
+    keys.entered, keys.release = threading.Event(), threading.Event()
+    refetch = threading.Thread(target=lambda: suppress_sdk_error(client, body, made_up_kid))
+    refetch.start()
+    try:
+        assert keys.entered.wait(5)  # the refetch holds the lock now
+        assert client.verify_webhook(body, genuine)["id"]
+        # Answered while the refetch is still waiting for its keys, not after it.
+        assert refetch.is_alive()
+    finally:
+        keys.release.set()
+        refetch.join(5)
+
+
+def suppress_sdk_error(client: GoPayClient, body: bytes, header: str) -> None:
+    with contextlib.suppress(GoPaySDKError):
+        client.verify_webhook(body, header)
 
 
 def test_keys_that_cannot_be_loaded_are_unavailable_not_a_forged_webhook(

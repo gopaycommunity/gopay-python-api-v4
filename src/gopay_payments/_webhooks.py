@@ -15,7 +15,7 @@ import json
 import re
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union, cast
 
@@ -233,15 +233,27 @@ def _keys_unavailable(cause: Optional[GoPayError]) -> GoPaySDKError:
     )
 
 
+@dataclass(frozen=True)
+class _KeySet:
+    """The keys of one successful fetch and when it happened, replaced as one object, so a
+    reader without the lock never pairs one fetch's keys with another's age."""
+
+    keys: Mapping[str, RSAPublicKey]
+    fetched_at: Optional[float]
+
+
+def _stale(loaded: _KeySet, now: float) -> bool:
+    return loaded.fetched_at is None or now - loaded.fetched_at >= KEYS_MAX_AGE_SECONDS
+
+
 class Webhooks:
     """Verifies webhooks against GoPay's signing keys, kept by ``kid`` for the client's life."""
 
     def __init__(self, transport: Transport) -> None:
         self._transport = transport
-        self._keys: dict[str, RSAPublicKey] = {}
+        self._loaded = _KeySet({}, None)
         # Last success and last attempt apart: a failed refresh is retried after the short
         # interval, not after another hour of trusting the old set.
-        self._fetched_at: Optional[float] = None
         self._attempted_at: Optional[float] = None
         self._last_failure: Optional[GoPayError] = None
         # Held across the fetch: webhooks arriving together wait for one fetch and share it.
@@ -265,20 +277,24 @@ class Webhooks:
         Raises when that could not be established: not checked is not forged, and GoPay
         retries only a 5xx.
         """
+        # Without the lock when nothing is due: a known kid in a set young enough needs no
+        # fetch, so a refetch someone else started — with a made-up kid, say — holds up no
+        # webhook whose key is already here.
+        loaded = self._loaded
+        key = loaded.keys.get(kid)
+        if key is not None and not _stale(loaded, self._clock()):
+            return key
         with self._lock:
             now = self._clock()
-            due = (
-                kid not in self._keys
-                or self._fetched_at is None
-                or now - self._fetched_at >= KEYS_MAX_AGE_SECONDS
-            )
+            loaded = self._loaded
+            due = kid not in loaded.keys or _stale(loaded, now)
             checked = False
             if due and (
                 self._attempted_at is None or now - self._attempted_at >= REFETCH_INTERVAL_SECONDS
             ):
                 self._load()
                 checked = True
-            key = self._keys.get(kid)
+            key = self._loaded.keys.get(kid)
             if key is not None:
                 return key
             if self._last_failure is not None:
@@ -293,9 +309,8 @@ class Webhooks:
             # Sent once, not retried: every webhook arriving meanwhile waits on the lock, and
             # one that cannot be checked gets a 5xx that GoPay retries anyway.
             keys = self._transport.request("GET", PUBLIC_KEYS_PATH, read=_read_keys, retry=False)
-            self._keys = cast("dict[str, RSAPublicKey]", keys)
+            self._loaded = _KeySet(cast("dict[str, RSAPublicKey]", keys), self._clock())
             self._last_failure = None
-            self._fetched_at = self._clock()
         except GoPayError as error:
             # Reported here, once for this attempt. The webhooks that find the failure
             # standing raise WEBHOOK_KEYS_UNAVAILABLE, which is never reported, so an endpoint
