@@ -4,6 +4,10 @@ Run with ``uv run pytest -m e2e``. They read:
 
 - ``GOPAY_PAYMENTS_V4_CLIENT_ID``, ``GOPAY_PAYMENTS_V4_CLIENT_SECRET``, ``GOPAY_PAYMENTS_V4_GOID``
 - ``GOPAY_PAYMENTS_V4_BASE_URL`` (optional): a gateway other than the public sandbox
+- ``GOPAY_E2E_WEBHOOK_INSPECTION_URL`` (optional): demo-site's webhook receiver on the same
+  environment, which the webhook delivery test reads back from; skipped without it
+
+The events tests ask for the ``event:read`` and ``shared:read`` scopes too.
 
 They create and cancel real payments, so they run on the sandbox environment only and refuse a
 base URL that points at production.
@@ -14,6 +18,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from typing import Callable
 from urllib.parse import urlsplit
 
 import pytest
@@ -38,8 +43,7 @@ def goid() -> str:
     return _require("GOPAY_PAYMENTS_V4_GOID")
 
 
-@pytest.fixture(scope="session")
-def client() -> Iterator[GoPayClient]:
+def _client(*scopes: str) -> Iterator[GoPayClient]:
     base_url = os.environ.get("GOPAY_PAYMENTS_V4_BASE_URL") or None
     host = urlsplit(base_url).hostname if base_url else None
     if host in PRODUCTION_HOSTS:
@@ -52,13 +56,32 @@ def client() -> Iterator[GoPayClient]:
         c.authenticate(
             _require("GOPAY_PAYMENTS_V4_CLIENT_ID"),
             _require("GOPAY_PAYMENTS_V4_CLIENT_SECRET"),
-            combine_scopes(GoPayScopes.PAYMENT_WRITE, GoPayScopes.PAYMENT_READ),
+            combine_scopes(*scopes),
         )
         yield c
 
 
-@pytest.fixture
-def payment_request() -> PaymentCreateRequest:
+@pytest.fixture(scope="session")
+def client() -> Iterator[GoPayClient]:
+    yield from _client(GoPayScopes.PAYMENT_WRITE, GoPayScopes.PAYMENT_READ)
+
+
+@pytest.fixture(scope="session")
+def events_client() -> Iterator[GoPayClient]:
+    """A client that may also read events and the webhook keys.
+
+    A fixture of its own: credentials without event:read or shared:read fail these tests
+    alone, not every live test.
+    """
+    yield from _client(
+        GoPayScopes.PAYMENT_WRITE,
+        GoPayScopes.PAYMENT_READ,
+        GoPayScopes.EVENT_READ,
+        GoPayScopes.SHARED_READ,
+    )
+
+
+def _payment_request() -> PaymentCreateRequest:
     return {
         "amount": 100,
         "currency": "CZK",
@@ -70,3 +93,14 @@ def payment_request() -> PaymentCreateRequest:
             "notification_url": "https://shop.example/notify",
         },
     }
+
+
+@pytest.fixture
+def payment_request() -> PaymentCreateRequest:
+    return _payment_request()
+
+
+@pytest.fixture(scope="session")
+def payment_request_factory() -> Callable[[], PaymentCreateRequest]:
+    """A new payment request per call, for fixtures wider than one test."""
+    return _payment_request
