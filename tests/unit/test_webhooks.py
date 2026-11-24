@@ -464,6 +464,18 @@ def test_webhooks_arriving_together_share_one_fetch(
     assert keys.fetches == 1
 
 
+def test_the_key_request_is_sent_once_not_retried(
+    client: GoPayClient, keys: KeyServer, key_a: SigningKey
+) -> None:
+    # Webhooks arriving meanwhile wait on the lock; GoPay retries the 5xx they get anyway.
+    keys.fail(503)
+    code_of(
+        lambda: client.verify_webhook(event(), key_a.sign(event())),
+        ErrorCode.WEBHOOK_KEYS_UNAVAILABLE,
+    )
+    assert keys.fetches == 1
+
+
 def test_keys_that_cannot_be_loaded_are_unavailable_not_a_forged_webhook(
     client: GoPayClient, keys: KeyServer, key_a: SigningKey
 ) -> None:

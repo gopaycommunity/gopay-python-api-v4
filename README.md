@@ -205,8 +205,9 @@ anyone who can reach the endpoint can cause one; a failed key request does, once
 def handle(event):
     if not is_known_event(event):
         return                      # a type added after this SDK version: ignore it
-    if event["type"].startswith("payments."):
-        payment = client.get_payment_status(event["data"]["payment_id"])
+    payment_id = event["data"].get("payment_id")
+    if event["type"].startswith("payments.") and payment_id:
+        payment = client.get_payment_status(payment_id)
         ...
 ```
 
@@ -451,7 +452,8 @@ Every error the SDK raises is a `GoPayError`:
 | `INVALID_CONFIG` | invalid client configuration, or `verify_webhook()` without the `webhooks` extra |
 | `INVALID_ARGUMENT` | a missing or invalid argument |
 
-Both kinds carry `trace_id` and `transaction_id` — see [Request ids](#request-ids).
+An error a request raised carries that request's `trace_id` and `transaction_id` — see
+[Request ids](#request-ids).
 
 ```python
 from gopay_payments import ErrorCode, GoPayHTTPError, GoPaySDKError
@@ -484,10 +486,11 @@ Every request carries ids that GoPay's log records, so GoPay support can find a 
   token refresh, the retries, the polls of an `await_*` method, the pages of `iter_events()`.
 - `X-GoPay-Payment-Session-Id` — the payment id, on requests about one payment.
 
-Every error carries the ids of the request it came from as `trace_id` and `transaction_id` —
-a timeout and a dropped connection included, where no response arrived. They are `None` for
-an error raised before any request (an invalid argument, no token). Quote them when you
-contact GoPay support.
+An error a request raised — an HTTP error, a timeout, a dropped connection, an unusable
+answer — carries that request's ids as `trace_id` and `transaction_id`, also where no
+response arrived. They are `None` on an error the SDK raised itself: an invalid argument, no
+token, or the outcome of a poller such as `CHARGE_FAILED`. Quote them when you contact GoPay
+support.
 
 To find all calls of one of your requests by your own id, run them in a block:
 

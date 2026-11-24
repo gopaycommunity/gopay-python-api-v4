@@ -166,7 +166,10 @@ def read_page(data: Any) -> EventPage:
     if not isinstance(items, list) or not all(is_event(item) for item in items):
         raise unexpected_events()
     following = data.get("next_page_url")
-    if following not in (None, "") and next_page_query(following) is None:
+    if following in (None, ""):
+        # Absent, as the type says, when there is no next page — not null or empty.
+        data.pop("next_page_url", None)
+    elif next_page_query(following) is None:
         raise unexpected_events()
     return data  # type: ignore[no-any-return]
 

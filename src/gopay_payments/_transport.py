@@ -292,6 +292,7 @@ class Transport:
         body: Any = None,
         many: bool = False,
         read: Optional[Callable[[Any], Any]] = None,
+        retry: bool = True,
     ) -> Any:
         """Send an authenticated API request and return the JSON object it answered with.
 
@@ -300,9 +301,10 @@ class Transport:
         return ``PaymentDetails`` must not hand its caller ``None``.
 
         ``read`` checks and converts the decoded body. An error it raises carries this
-        request's ids, as any other error of the request does.
+        request's ids, as any other error of the request does. ``retry=False`` sends a read
+        once, for a caller that must not wait out retries.
         """
-        return self.fetch(method, path, body=body, many=many, read=read)[0]
+        return self.fetch(method, path, body=body, many=many, read=read, retry=retry)[0]
 
     def fetch(
         self,
@@ -312,10 +314,11 @@ class Transport:
         body: Any = None,
         many: bool = False,
         read: Optional[Callable[[Any], Any]] = None,
+        retry: bool = True,
     ) -> tuple[Any, RequestIds]:
         """:meth:`request`, also returning the ids the request went out with — for an error
         found in the answer only later, which must still point at this request."""
-        response, ids = self._exchange(method, path, body=body)
+        response, ids = self._exchange(method, path, body=body, retry=retry)
         try:
             data = _json_body(response, many=many)
             return (read(data) if read is not None else data), ids
@@ -333,6 +336,7 @@ class Transport:
         path: str,
         *,
         body: Any,
+        retry: bool = True,
     ) -> tuple[httpx.Response, RequestIds]:
         content = _encode(body)
         # One trace id for the request, kept by every attempt: the 5xx retries and the resend
@@ -341,7 +345,12 @@ class Transport:
 
         token = self._bearer()
         response = self._send(
-            method, path, headers=self._headers(method, path, token, ids), content=content, ids=ids
+            method,
+            path,
+            headers=self._headers(method, path, token, ids),
+            content=content,
+            ids=ids,
+            retry=retry,
         )
 
         if response.status_code == 401:
@@ -410,6 +419,8 @@ class Transport:
         for attempt in range(attempts):
             if attempt:
                 self._sleep(retry_after if retry_after is not None else self._backoff(attempt))
+                # Spent: a 5xx or a dropped connection after it backs off as usual.
+                retry_after = None
             # The trace id on every line, so a merchant's log points GoPay support at the
             # request — a timeout and a dropped connection included, where no answer came.
             logger.debug("→ %s %s trace_id=%s", method, url, ids.trace_id)
@@ -442,7 +453,6 @@ class Transport:
                 continue
             if response.status_code < 500:
                 return response
-            retry_after = None
         raise _correlation.tag(
             GoPaySDKError(
                 f"[GoPaySDK] Network error ({type(last_error).__name__}).",

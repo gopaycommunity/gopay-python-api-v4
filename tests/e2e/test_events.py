@@ -88,10 +88,12 @@ def test_iter_events_pages_newest_first_without_repeating_an_event(
     events_client: GoPayClient, goid: str, canceled: tuple[str, GoPayEvent]
 ) -> None:
     first = events_client.list_events(goid, {"max_items": 2})
-    assert first.get("next_page_url")
+    if "next_page_url" not in first:
+        pytest.skip("the eshop has two events or fewer in the last 30 days: no page to cross")
     seen = list(islice(events_client.iter_events(goid, {"max_items": 2}), 5))
     ids = [event["id"] for event in seen]
-    assert len(set(ids)) == 5
+    assert len(ids) > 2  # past the first page
+    assert len(set(ids)) == len(ids)
     # Newest first by id (a ULID): occurred_at of events recorded within the same few
     # milliseconds can be out of that order.
     assert ids == sorted(ids, reverse=True)

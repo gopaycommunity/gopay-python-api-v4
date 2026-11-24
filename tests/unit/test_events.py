@@ -143,6 +143,14 @@ def test_a_page_the_sdk_cannot_read_is_an_unexpected_response_with_its_ids(
     assert caught.value.trace_id == gateway.last().headers["x-gopay-trace-id"]
 
 
+@pytest.mark.parametrize("cursor", [None, ""])
+def test_a_null_or_empty_cursor_comes_back_absent(
+    client: GoPayClient, gateway: FakeGateway, cursor: Any
+) -> None:
+    gateway.on("GET", EVENTS, reply(200, {"items": [ev(1)], "next_page_url": cursor}))
+    assert client.list_events("8123456789") == {"items": [ev(1)]}
+
+
 def test_an_empty_cursor_is_the_last_page(client: GoPayClient, gateway: FakeGateway) -> None:
     gateway.on("GET", EVENTS, reply(200, {"items": [ev(1)], "next_page_url": ""}))
     assert [e["id"] for e in client.iter_events("8123456789")] == ["evt-1"]

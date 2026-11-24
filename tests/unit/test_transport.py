@@ -204,6 +204,19 @@ def test_a_5xx_after_a_429_backs_off_rather_than_waiting_as_asked_before(
     assert pauses == [5.0, 0.4]
 
 
+def test_a_dropped_connection_after_a_429_backs_off_rather_than_waiting_again(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    pauses: list[float] = []
+    client._transport._sleep = pauses.append
+    client._transport._random = lambda: 1.0
+    gateway.on(
+        "GET", "/payments/1", too_many("8"), httpx.ConnectError("reset"), reply(200, {"id": "1"})
+    )
+    client.get_payment_status("1")
+    assert pauses == [8.0, 0.4]
+
+
 @pytest.mark.parametrize("method", ["POST", "DELETE"])
 def test_a_429_on_a_write_is_not_retried(
     client: GoPayClient, gateway: FakeGateway, method: str

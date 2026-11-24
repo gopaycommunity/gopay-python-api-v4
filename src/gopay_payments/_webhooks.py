@@ -291,7 +291,9 @@ class Webhooks:
     def _load(self) -> None:
         """Replace the keys as a whole on success; a failed fetch keeps the last set."""
         try:
-            keys = self._transport.request("GET", PUBLIC_KEYS_PATH, read=_read_keys)
+            # Sent once, not retried: every webhook arriving meanwhile waits on the lock, and
+            # one that cannot be checked gets a 5xx that GoPay retries anyway.
+            keys = self._transport.request("GET", PUBLIC_KEYS_PATH, read=_read_keys, retry=False)
             self._keys = cast("dict[str, RSAPublicKey]", keys)
             self._last_failure = None
             self._fetched_at = self._clock()
