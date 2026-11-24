@@ -293,10 +293,23 @@ class Transport:
         ``read`` checks and converts the decoded body. An error it raises carries this
         request's ids, as any other error of the request does.
         """
+        return self.fetch(method, path, body=body, many=many, read=read)[0]
+
+    def fetch(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Any = None,
+        many: bool = False,
+        read: Optional[Callable[[Any], Any]] = None,
+    ) -> tuple[Any, RequestIds]:
+        """:meth:`request`, also returning the ids the request went out with — for an error
+        found in the answer only later, which must still point at this request."""
         response, ids = self._exchange(method, path, body=body)
         try:
             data = _json_body(response, many=many)
-            return read(data) if read is not None else data
+            return (read(data) if read is not None else data), ids
         except GoPayError as error:
             _correlation.tag(error, ids)
             raise

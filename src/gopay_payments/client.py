@@ -5,15 +5,25 @@ from __future__ import annotations
 import functools
 import math
 import threading
-from collections.abc import Collection
+from collections.abc import Collection, Generator, Iterator
 from contextlib import AbstractContextManager
-from typing import Any, Callable, Optional, TypeVar, Union, cast
+from typing import Any, Callable, Generic, Optional, TypeVar, Union, cast
 
 import httpx
 from typing_extensions import Concatenate, Literal, ParamSpec, Self, TypedDict
 
 from . import _correlation, _polling
-from ._events import GoPayEvent
+from ._events import (
+    EventPage,
+    GoPayEvent,
+    ListEventsParams,
+    events_query,
+    next_page_query,
+    page_key,
+    paging_stuck,
+    read_event,
+    read_page,
+)
 from ._generated import (
     JWKSet,
     LinkCreateRequest,
@@ -49,6 +59,7 @@ __all__ = ["BrowserKeys", "GoPayClient"]
 
 P = ParamSpec("P")
 R = TypeVar("R")
+T = TypeVar("T")
 
 # AUTHORIZED is final for this poller: a pre-authorized payment waits for the merchant to
 # capture it, which no amount of polling brings about.
@@ -574,6 +585,73 @@ class GoPayClient:
         """
         return cast(JWKSet, self._transport.request("GET", PUBLIC_KEYS_PATH))
 
+    # -------------------------------------------------------------------- events
+
+    @_public
+    def list_events(
+        self, goid: Union[str, int], params: Optional[ListEventsParams] = None
+    ) -> EventPage:
+        """Return one page of the eshop's events, newest first.
+        ``GET /eshops/{goid}/events`` (scope ``event:read``)
+
+        These are the events webhooks deliver, kept for 30 days. ``next_page_url`` is set
+        while older matching events remain; :meth:`iter_events` follows it for you.
+
+        :param params: Filters — ``type``, ``related_type`` with ``related_id``,
+            ``occurred_after``, ``occurred_before`` — and ``max_items``.
+        """
+        path = _events_path(_goid(goid), events_query(params))
+        return cast(EventPage, self._transport.request("GET", path, read=read_page))
+
+    @_public
+    def get_event(self, goid: Union[str, int], event_id: str) -> GoPayEvent:
+        """Return one event by its ``id``, e.g. from a webhook.
+        ``GET /eshops/{goid}/events/{event_id}`` (scope ``event:read``)"""
+        eid = require_path_segment(event_id, "event_id")
+        path = f"/eshops/{_goid(goid)}/events/{eid}"
+        return cast(GoPayEvent, self._transport.request("GET", path, read=read_event))
+
+    @_public
+    def iter_events(
+        self, goid: Union[str, int], params: Optional[ListEventsParams] = None
+    ) -> Iterator[GoPayEvent]:
+        """Yield every event matching ``params``, page after page (scope ``event:read``).
+
+        The next page is fetched only when the previous one is used up, and only its query
+        is taken from ``next_page_url``: it is sent to the base URL this client was
+        configured with, so the access token never goes to another host. ::
+
+            for event in client.iter_events(goid, {"related_type": "payments",
+                                                    "related_id": payment_id}):
+                ...
+
+        Arguments are checked here; requests start with the first iteration, and every
+        page goes out under the transaction id of this call. Paging that would never end —
+        a ``next_page_url`` naming a page already fetched, or an empty page that names a
+        next one — raises ``UNEXPECTED_RESPONSE`` once the page's events have been yielded.
+        """
+        gid = _goid(goid)
+        query = events_query(params)
+        transaction_id = _correlation.current_transaction_id() or _correlation.new_id()
+        return _InTransaction(self._event_pages(gid, query), transaction_id, self._transport)
+
+    def _event_pages(self, gid: str, query: str) -> Generator[GoPayEvent, None, None]:
+        fetched = {page_key(query)}
+        while True:
+            page, ids = self._transport.fetch("GET", _events_path(gid, query), read=read_page)
+            yield from page["items"]
+            following = next_page_query(page.get("next_page_url"))
+            if following is None:
+                return
+            if not page["items"]:
+                raise _correlation.tag(paging_stuck("an empty page names a next page"), ids)
+            query = following
+            if page_key(query) in fetched:
+                raise _correlation.tag(
+                    paging_stuck("next_page_url names a page already fetched"), ids
+                )
+            fetched.add(page_key(query))
+
     # --------------------------------------------------------------- recurrences
 
     @_public
@@ -674,6 +752,39 @@ class GoPayClient:
             on_state_change=on_state_change,
             cancel=cancel,
         )
+
+
+class _InTransaction(Iterator[T], Generic[T]):
+    """An SDK generator whose every step runs under the transaction of the call that made it.
+
+    A generator's body runs on each ``next()``, after the method that returned it is done:
+    without this, its requests would each get a transaction id of their own, and its errors
+    would never reach ``on_error``.
+    """
+
+    def __init__(self, steps: Generator[T, None, None], transaction_id: str, transport: Transport):
+        self._steps = steps
+        self._transaction_id = transaction_id
+        self._transport = transport
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> T:
+        with _correlation.transaction(self._transaction_id):
+            try:
+                return next(self._steps)
+            except GoPayError as error:
+                self._transport.report(error)
+                raise
+
+    def close(self) -> None:
+        """Stop iterating; no further page is fetched."""
+        self._steps.close()
+
+
+def _events_path(gid: str, query: str) -> str:
+    return f"/eshops/{gid}/events" + (f"?{query}" if query else "")
 
 
 def _goid(goid: Union[str, int]) -> str:

@@ -17,6 +17,11 @@ class GoPayScopes:
     """Tokenize encrypted cards and delete stored card tokens."""
     CARD_READ = "card:read"
     """Read stored card tokens."""
+    EVENT_READ = "event:read"
+    """Read the eshop's events: :meth:`GoPayClient.list_events`, ``get_event``, ``iter_events``."""
+    SHARED_READ = "shared:read"
+    """Read public resources such as the webhook signing keys :meth:`GoPayClient.verify_webhook`
+    needs."""
 
 
 def combine_scopes(*scopes: str) -> str:

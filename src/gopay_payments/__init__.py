@@ -8,7 +8,7 @@
 Request and response shapes are in :mod:`gopay_payments.types`.
 """
 
-from ._events import GoPayEvent, UnknownEvent, is_known_event
+from ._events import EventPage, GoPayEvent, ListEventsParams, UnknownEvent, is_known_event
 from ._version import __version__
 from .client import BrowserKeys, GoPayClient
 from .environment import Environment
@@ -21,6 +21,7 @@ __all__ = [
     "CachedToken",
     "Environment",
     "ErrorCode",
+    "EventPage",
     "GoPayClient",
     "GoPayError",
     "GoPayEvent",
@@ -28,6 +29,7 @@ __all__ = [
     "GoPaySDKError",
     "GoPayScopes",
     "InMemoryTokenCache",
+    "ListEventsParams",
     "TokenCache",
     "UnknownEvent",
     "__version__",
