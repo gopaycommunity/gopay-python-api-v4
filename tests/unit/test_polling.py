@@ -17,7 +17,7 @@ NO_ACTION = object()
 
 
 def charge(state: str, redirect: Any = NO_ACTION, emv3ds: str = "CHALLENGE_REQUIRED") -> Any:
-    body: dict[str, Any] = {"id": "42", "state": state, "return_url": "https://shop.example/r"}
+    body: dict[str, Any] = {"id": "42", "state": state}
     if redirect is not NO_ACTION:
         body["action"] = {"action_type": "EMV3DS", "state": emv3ds, "redirect_url": redirect}
     return reply(200, body)

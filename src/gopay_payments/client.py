@@ -25,6 +25,7 @@ from ._generated import (
     QRPaymentDetails,
     RecurrenceCreateRequest,
     RecurrenceDetails,
+    RecurrencePaymentDetails,
     RefundCreateRequest,
     RefundDetails,
     TokenCreateRequest,
@@ -568,7 +569,7 @@ class GoPayClient:
     @_reported
     def start_recurrence(
         self, rec_id: str, override: Optional[PaymentInstanceOverride] = None
-    ) -> PaymentDetails:
+    ) -> RecurrencePaymentDetails:
         """Create the first payment of a recurrence. ``POST /recurrences/{rec_id}/start``
 
         The recurrence moves to ``REQUESTED``. The customer pays the returned payment at
@@ -581,12 +582,12 @@ class GoPayClient:
         """
         rid = require_path_segment(rec_id, "rec_id")
         path = f"/recurrences/{rid}/start"
-        return cast(PaymentDetails, self._transport.request("POST", path, body=override))
+        return cast(RecurrencePaymentDetails, self._transport.request("POST", path, body=override))
 
     @_reported
     def create_next_payment(
         self, rec_id: str, override: Optional[PaymentInstanceOverride] = None
-    ) -> PaymentDetails:
+    ) -> RecurrencePaymentDetails:
         """Create the next payment of a ``STARTED`` recurrence.
         ``POST /recurrences/{rec_id}/next``
 
@@ -594,7 +595,7 @@ class GoPayClient:
         """
         rid = require_path_segment(rec_id, "rec_id")
         path = f"/recurrences/{rid}/next"
-        return cast(PaymentDetails, self._transport.request("POST", path, body=override))
+        return cast(RecurrencePaymentDetails, self._transport.request("POST", path, body=override))
 
     @_reported
     def stop_recurrence(self, rec_id: str) -> None:
