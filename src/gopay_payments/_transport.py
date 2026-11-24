@@ -13,6 +13,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from . import _correlation
+from ._correlation import RequestIds
 from ._endpoint import normalize_endpoint
 from .environment import Environment, resolve_base_url
 from .errors import ErrorCode, GoPayError, GoPayHTTPError, GoPaySDKError
@@ -156,6 +158,7 @@ class Transport:
         authorization = "Basic " + base64.b64encode(
             f"{credentials.client_id}:{credentials.client_secret}".encode()
         ).decode("ascii")
+        ids = _correlation.request_ids()
         response = self._send(
             "POST",
             TOKEN_PATH,
@@ -164,22 +167,30 @@ class Transport:
                 "User-Agent": self.user_agent,
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Authorization": authorization,
+                **_correlation.headers_for(ids, TOKEN_PATH),
             },
             content=urlencode(
                 {"grant_type": "client_credentials", "scope": credentials.scope}
             ).encode(),
+            ids=ids,
         )
         if not response.is_success:
-            raise GoPayHTTPError(
-                response.status_code, _error_body(response), method="POST", endpoint=TOKEN_PATH
+            raise _correlation.tag(
+                GoPayHTTPError(
+                    response.status_code, _error_body(response), method="POST", endpoint=TOKEN_PATH
+                ),
+                ids,
             )
         try:
             body = response.json()
         except ValueError:
             # Not chained: the decode error keeps the whole body, which may hold a token.
-            raise GoPaySDKError(
-                "[GoPaySDK] Invalid token response: could not parse JSON.",
-                error_code=ErrorCode.AUTH_INVALID_RESPONSE,
+            raise _correlation.tag(
+                GoPaySDKError(
+                    "[GoPaySDK] Invalid token response: could not parse JSON.",
+                    error_code=ErrorCode.AUTH_INVALID_RESPONSE,
+                ),
+                ids,
             ) from None
         access_token = body.get("access_token") if isinstance(body, dict) else None
         expires_in = body.get("expires_in") if isinstance(body, dict) else None
@@ -189,9 +200,12 @@ class Transport:
             or isinstance(expires_in, bool)
             or not isinstance(expires_in, (int, float))
         ):
-            raise GoPaySDKError(
-                "[GoPaySDK] Invalid token response: missing required fields.",
-                error_code=ErrorCode.AUTH_INVALID_RESPONSE,
+            raise _correlation.tag(
+                GoPaySDKError(
+                    "[GoPaySDK] Invalid token response: missing required fields.",
+                    error_code=ErrorCode.AUTH_INVALID_RESPONSE,
+                ),
+                ids,
             )
         token = CachedToken(access_token=access_token, expires_at=self._clock() + float(expires_in))
         self._cache.set(self._cache_key(credentials), token)
@@ -223,15 +237,21 @@ class Transport:
                 # until someone calls authenticate() again.
                 if _is_permanent_rejection(cause):
                     self._forget(credentials)
-                    raise GoPaySDKError(
-                        "[GoPaySDK] Token refresh failed: the credentials were rejected. "
-                        "Call authenticate() again.",
-                        error_code=ErrorCode.AUTH_REFRESH_FAILED,
+                    raise _like(
+                        cause,
+                        GoPaySDKError(
+                            "[GoPaySDK] Token refresh failed: the credentials were rejected. "
+                            "Call authenticate() again.",
+                            error_code=ErrorCode.AUTH_REFRESH_FAILED,
+                        ),
                     ) from cause
-                raise GoPaySDKError(
-                    "[GoPaySDK] Token refresh failed. The credentials are kept and the next "
-                    "request tries again.",
-                    error_code=ErrorCode.AUTH_REFRESH_FAILED,
+                raise _like(
+                    cause,
+                    GoPaySDKError(
+                        "[GoPaySDK] Token refresh failed. The credentials are kept and the next "
+                        "request tries again.",
+                        error_code=ErrorCode.AUTH_REFRESH_FAILED,
+                    ),
                 ) from cause
 
     def _discard(self, rejected: str) -> None:
@@ -255,15 +275,24 @@ class Transport:
         *,
         body: Any = None,
         many: bool = False,
+        read: Optional[Callable[[Any], Any]] = None,
     ) -> Any:
         """Send an authenticated API request and return the JSON object it answered with.
 
         ``body=None`` sends no body. With ``many=True`` the answer is a list of objects. Any
         other 2xx body — empty included — raises ``UNEXPECTED_RESPONSE``: a method typed to
         return ``PaymentDetails`` must not hand its caller ``None``.
+
+        ``read`` checks and converts the decoded body. An error it raises carries this
+        request's ids, as any other error of the request does.
         """
-        response = self._exchange(method, path, body=body)
-        return _json_body(response, many=many)
+        response, ids = self._exchange(method, path, body=body)
+        try:
+            data = _json_body(response, many=many)
+            return read(data) if read is not None else data
+        except GoPayError as error:
+            _correlation.tag(error, ids)
+            raise
 
     def delete(self, path: str) -> None:
         """Send an authenticated ``DELETE``. The API answers ``204``; there is nothing to return."""
@@ -275,11 +304,16 @@ class Transport:
         path: str,
         *,
         body: Any,
-    ) -> httpx.Response:
+    ) -> tuple[httpx.Response, RequestIds]:
         content = _encode(body)
+        # One trace id for the request, kept by every attempt: the 5xx retries and the resend
+        # after a 401 are the same request, and the gateway's log groups them by it.
+        ids = _correlation.request_ids()
 
         token = self._bearer()
-        response = self._send(method, path, headers=self._headers(method, token), content=content)
+        response = self._send(
+            method, path, headers=self._headers(method, path, token, ids), content=content, ids=ids
+        )
 
         if response.status_code == 401:
             self._discard(token)
@@ -287,8 +321,9 @@ class Transport:
             response = self._send(
                 method,
                 path,
-                headers=self._headers(method, token),
+                headers=self._headers(method, path, token, ids),
                 content=content,
+                ids=ids,
                 retry=False,
             )
             if response.status_code == 401:
@@ -296,25 +331,32 @@ class Transport:
                 # endpoint, which says nothing about the others. The token goes, so the
                 # next call starts from a new one.
                 self._discard(token)
-                raise GoPaySDKError(
-                    "[GoPaySDK] Request unauthorized after token refresh. Check OAuth2 scopes.",
-                    error_code=ErrorCode.AUTH_UNAUTHORIZED,
+                raise _correlation.tag(
+                    GoPaySDKError(
+                        "[GoPaySDK] Request unauthorized after token refresh. Check OAuth2 scopes.",
+                        error_code=ErrorCode.AUTH_UNAUTHORIZED,
+                    ),
+                    ids,
                 )
 
         if not response.is_success:
-            raise GoPayHTTPError(
-                response.status_code,
-                _error_body(response),
-                method=method,
-                endpoint=normalize_endpoint(path),
+            raise _correlation.tag(
+                GoPayHTTPError(
+                    response.status_code,
+                    _error_body(response),
+                    method=method,
+                    endpoint=normalize_endpoint(path),
+                ),
+                ids,
             )
-        return response
+        return response, ids
 
-    def _headers(self, method: str, token: str) -> dict[str, str]:
+    def _headers(self, method: str, path: str, token: str, ids: RequestIds) -> dict[str, str]:
         headers = {
             "Accept": ACCEPT,
             "User-Agent": self.user_agent,
             "Authorization": f"Bearer {token}",
+            **_correlation.headers_for(ids, path),
         }
         if method in ("POST", "PUT"):
             # Also on a POST without a body: the gateway answers 415 to a POST that does
@@ -329,6 +371,7 @@ class Transport:
         *,
         headers: Mapping[str, str],
         content: Optional[bytes],
+        ids: RequestIds,
         retry: bool = True,
     ) -> httpx.Response:
         url = self.base_url + path
@@ -337,25 +380,37 @@ class Transport:
         for attempt in range(attempts):
             if attempt:
                 self._sleep(RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1))
-            logger.debug("→ %s %s", method, url)
+            # The trace id on every line, so a merchant's log points GoPay support at the
+            # request — a timeout and a dropped connection included, where no answer came.
+            logger.debug("→ %s %s trace_id=%s", method, url, ids.trace_id)
             try:
                 response = self._http.request(
                     method, url, headers=headers, content=content, timeout=self._timeout
                 )
             except httpx.TimeoutException as error:
+                logger.debug("✗ %s %s timed out trace_id=%s", method, url, ids.trace_id)
                 # Not retried: a timed-out request may still be running on the other side.
-                raise GoPaySDKError(
-                    "[GoPaySDK] Request timed out.", error_code=ErrorCode.NETWORK_TIMEOUT
+                raise _correlation.tag(
+                    GoPaySDKError(
+                        "[GoPaySDK] Request timed out.", error_code=ErrorCode.NETWORK_TIMEOUT
+                    ),
+                    ids,
                 ) from error
             except httpx.RequestError as error:
+                logger.debug(
+                    "✗ %s %s %s trace_id=%s", method, url, type(error).__name__, ids.trace_id
+                )
                 last_error = error
                 continue
-            logger.debug("← %s %s", response.status_code, url)
+            logger.debug("← %s %s trace_id=%s", response.status_code, url, ids.trace_id)
             if response.status_code < 500 or attempt == attempts - 1:
                 return response
-        raise GoPaySDKError(
-            f"[GoPaySDK] Network error ({type(last_error).__name__}).",
-            error_code=ErrorCode.NETWORK_ERROR,
+        raise _correlation.tag(
+            GoPaySDKError(
+                f"[GoPaySDK] Network error ({type(last_error).__name__}).",
+                error_code=ErrorCode.NETWORK_ERROR,
+            ),
+            ids,
         ) from last_error
 
     def close(self) -> None:
@@ -399,6 +454,13 @@ def _unexpected_response(expected: str) -> GoPaySDKError:
         f"[GoPaySDK] Failed to parse API response as {expected}.",
         error_code=ErrorCode.UNEXPECTED_RESPONSE,
     )
+
+
+def _like(cause: GoPayError, error: GoPayError) -> GoPayError:
+    """``error`` carrying the request ids of ``cause``, the failure it stands in for."""
+    error.trace_id = cause.trace_id
+    error.transaction_id = cause.transaction_id
+    return error
 
 
 def _is_permanent_rejection(error: GoPayError) -> bool:

@@ -44,6 +44,13 @@ class ErrorCode(str, Enum):
     """Polling gave up before the charge, payment, refund or recurrence settled."""
     CHARGE_FAILED = "CHARGE_FAILED"
     """The charge reached ``FAILED``, or polling was cancelled."""
+    WEBHOOK_INVALID = "WEBHOOK_INVALID"
+    """The request is not a webhook GoPay signed: answer it with a 4xx. Never passed to
+    ``on_error`` — anyone who can reach the endpoint can cause one."""
+    WEBHOOK_KEYS_UNAVAILABLE = "WEBHOOK_KEYS_UNAVAILABLE"
+    """The webhook could not be checked because the signing keys could not be loaded: answer
+    it with a 5xx, so GoPay sends it again. Not passed to ``on_error``; the failed key request
+    is, once."""
     INVALID_CONFIG = "INVALID_CONFIG"
     """The client configuration is invalid."""
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
@@ -51,11 +58,24 @@ class ErrorCode(str, Enum):
 
 
 class GoPayError(Exception):
-    """Base class of every error the SDK raises."""
+    """Base class of every error the SDK raises.
+
+    ``trace_id`` and ``transaction_id`` are the ids GoPay's log records for the request the
+    error came from: quote them to GoPay support and the request can be found.
+    """
 
     # Set once the error has been handed to ``on_error``, so an error crossing several
     # layers on its way out is reported exactly once.
     _reported: bool = False
+
+    trace_id: Optional[str] = None
+    """``X-GoPay-Trace-Id`` of the HTTP request the error came from — also on a timeout or a
+    network error, where no response arrived. ``None`` when no request went out (an invalid
+    argument, no access token). Set by the SDK."""
+
+    transaction_id: Optional[str] = None
+    """``X-GoPay-Transaction-Id`` of the SDK call the error came from, shared by every request
+    the call made (token refresh, retries, polling). ``None`` when ``trace_id`` is."""
 
 
 class GoPaySDKError(GoPayError):

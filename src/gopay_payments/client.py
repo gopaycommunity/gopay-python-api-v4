@@ -6,12 +6,13 @@ import functools
 import math
 import threading
 from collections.abc import Collection
+from contextlib import AbstractContextManager
 from typing import Any, Callable, Optional, TypeVar, Union, cast
 
 import httpx
 from typing_extensions import Concatenate, Literal, ParamSpec, Self, TypedDict
 
-from . import _polling
+from . import _correlation, _polling
 from ._generated import (
     LinkCreateRequest,
     LinkDetails,
@@ -71,10 +72,15 @@ class BrowserKeys(TypedDict):
     client_id: str
 
 
-def _reported(
+def _public(
     method: Callable[Concatenate[GoPayClient, P], R],
 ) -> Callable[Concatenate[GoPayClient, P], R]:
-    """Report every SDK error a public method raises to ``on_error``.
+    """Run a public method as one transaction and report every SDK error it raises.
+
+    Every request the call makes — the token refresh, retries, the polls of an ``await_*``
+    method — goes out under one ``X-GoPay-Transaction-Id``, unless a transaction is already
+    running: an SDK method called from a callback, or one inside
+    :meth:`GoPayClient.with_transaction_id`.
 
     Errors raised during a request would reach ``on_error`` anyway, but argument
     validation and polling outcomes happen outside any request. Wrapping the method
@@ -84,11 +90,12 @@ def _reported(
 
     @functools.wraps(method)
     def wrapper(self: GoPayClient, /, *args: P.args, **kwargs: P.kwargs) -> R:
-        try:
-            return method(self, *args, **kwargs)
-        except GoPayError as error:
-            self._transport.report(error)
-            raise
+        with _correlation.transaction():
+            try:
+                return method(self, *args, **kwargs)
+            except GoPayError as error:
+                self._transport.report(error)
+                raise
 
     return wrapper
 
@@ -183,9 +190,32 @@ class GoPayClient:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    @_public
+    def with_transaction_id(self, transaction_id: str) -> AbstractContextManager[None]:
+        """Send the SDK calls inside the ``with`` block under your own transaction id.
+
+        By default each SDK call gets a new ``X-GoPay-Transaction-Id``, shared by every request
+        it makes. Inside the block every call uses ``transaction_id`` instead — your own request
+        id, say — so GoPay can find all of them from one id::
+
+            with client.with_transaction_id(request_id):
+                payment = client.create_payment(goid, params)
+                client.await_payment_status(payment["id"])
+
+        The id is held in a :mod:`contextvars` variable, so it belongs to the running thread
+        (or asyncio task) and applies to every client used there. A thread started inside the
+        block does not inherit it unless it runs in a copy of the context
+        (``contextvars.copy_context().run``); ``asyncio.to_thread`` copies it on its own.
+
+        :param transaction_id: 1 to 64 characters of ``A-Z``, ``a-z``, ``0-9``, ``.``, ``_``
+            and ``-`` — what GoPay's log accepts. Anything else raises ``INVALID_ARGUMENT``
+            rather than being dropped from the log.
+        """
+        return _correlation.transaction(_correlation.require_transaction_id(transaction_id))
+
     # ---------------------------------------------------------------------- auth
 
-    @_reported
+    @_public
     def authenticate(self, client_id: str, client_secret: str, scope: str) -> None:
         """Authenticate with the eshop's client credentials.
 
@@ -210,12 +240,12 @@ class GoPayClient:
         """Forget the credentials and drop the token from the cache."""
         self._transport.logout()
 
-    @_reported
+    @_public
     def set_shareable_key(self, key: str) -> None:
         """Set the shareable key returned by :meth:`get_browser_keys`."""
         self._shareable_key = require_non_empty_string(key, "shareable_key")
 
-    @_reported
+    @_public
     def get_browser_keys(self) -> BrowserKeys:
         """Return the public keys the browser SDK is initialised with.
 
@@ -233,7 +263,7 @@ class GoPayClient:
 
     # ------------------------------------------------------------------ payments
 
-    @_reported
+    @_public
     def create_payment(self, goid: Union[str, int], params: PaymentCreateRequest) -> PaymentDetails:
         """Create a payment. ``POST /eshops/{goid}/payments``
 
@@ -247,13 +277,13 @@ class GoPayClient:
         path = f"/eshops/{_goid(goid)}/payments"
         return cast(PaymentDetails, self._transport.request("POST", path, body=params))
 
-    @_reported
+    @_public
     def get_payment_status(self, payment_id: str) -> PaymentDetails:
         """Return the current state of a payment. ``GET /payments/{payment_id}``"""
         pid = require_path_segment(payment_id, "payment_id")
         return cast(PaymentDetails, self._transport.request("GET", f"/payments/{pid}"))
 
-    @_reported
+    @_public
     def cancel_payment(self, payment_id: str) -> None:
         """Cancel a payment that has not been charged. ``DELETE /payments/{payment_id}``
 
@@ -264,7 +294,7 @@ class GoPayClient:
         pid = require_path_segment(payment_id, "payment_id")
         self._transport.delete(f"/payments/{pid}")
 
-    @_reported
+    @_public
     def charge_payment(self, payment_id: str, params: PaymentChargeInput) -> PaymentChargeResponse:
         """Charge a payment. ``POST /payments/{payment_id}/charge``
 
@@ -281,14 +311,14 @@ class GoPayClient:
         path = f"/payments/{pid}/charge"
         return cast(PaymentChargeResponse, self._transport.request("POST", path, body=params))
 
-    @_reported
+    @_public
     def get_charge_state(self, payment_id: str) -> PaymentChargeStatusResponse:
         """Return the current state of a charge. ``GET /payments/{payment_id}/charge``"""
         pid = require_path_segment(payment_id, "payment_id")
         path = f"/payments/{pid}/charge"
         return cast(PaymentChargeStatusResponse, self._transport.request("GET", path))
 
-    @_reported
+    @_public
     def get_qr_payment_info(
         self, payment_id: str, format: Optional[Literal["png", "svg"]] = None
     ) -> QRPaymentDetails:
@@ -308,7 +338,7 @@ class GoPayClient:
             path += f"?format={format}"
         return cast(QRPaymentDetails, self._transport.request("GET", path))
 
-    @_reported
+    @_public
     def await_charge_state(
         self,
         payment_id: str,
@@ -349,7 +379,7 @@ class GoPayClient:
             cancel=cancel,
         )
 
-    @_reported
+    @_public
     def await_payment_status(
         self,
         payment_id: str,
@@ -383,7 +413,7 @@ class GoPayClient:
 
     # ------------------------------------------------------------------- refunds
 
-    @_reported
+    @_public
     def refund_payment(self, payment_id: str, params: RefundCreateRequest) -> RefundDetails:
         """Refund a payment, fully or partially. ``POST /payments/{payment_id}/refunds``
 
@@ -396,20 +426,20 @@ class GoPayClient:
         path = f"/payments/{pid}/refunds"
         return cast(RefundDetails, self._transport.request("POST", path, body=params))
 
-    @_reported
+    @_public
     def list_refunds(self, payment_id: str) -> list[RefundDetails]:
         """List the refunds of a payment. ``GET /payments/{payment_id}/refunds``"""
         pid = require_path_segment(payment_id, "payment_id")
         path = f"/payments/{pid}/refunds"
         return cast("list[RefundDetails]", self._transport.request("GET", path, many=True))
 
-    @_reported
+    @_public
     def get_refund(self, refund_id: str) -> RefundDetails:
         """Return one refund. ``GET /refunds/{refund_id}``"""
         rid = require_path_segment(refund_id, "refund_id")
         return cast(RefundDetails, self._transport.request("GET", f"/refunds/{rid}"))
 
-    @_reported
+    @_public
     def await_refund_state(
         self,
         refund_id: str,
@@ -438,7 +468,7 @@ class GoPayClient:
 
     # --------------------------------------------------------------------- cards
 
-    @_reported
+    @_public
     def get_card_details(self, card_id: str) -> PermanentCardTokenDetails:
         """Return a stored card token. ``GET /cards/tokens/{card_id}`` (scope ``card:read``)"""
         cid = require_path_segment(card_id, "card_id")
@@ -446,13 +476,13 @@ class GoPayClient:
             PermanentCardTokenDetails, self._transport.request("GET", f"/cards/tokens/{cid}")
         )
 
-    @_reported
+    @_public
     def delete_card(self, card_id: str) -> None:
         """Delete a stored card token. ``DELETE /cards/tokens/{card_id}`` (scope ``card:write``)"""
         cid = require_path_segment(card_id, "card_id")
         self._transport.delete(f"/cards/tokens/{cid}")
 
-    @_reported
+    @_public
     def tokenize_encrypted_card(self, payload: str) -> PermanentCardTokenDetails:
         """Store a card from the encrypted payload the GoPay card form produced.
         ``POST /cards/tokens`` (scope ``card:write``)
@@ -467,7 +497,7 @@ class GoPayClient:
 
     # --------------------------------------------------------------------- links
 
-    @_reported
+    @_public
     def create_payment_link(self, goid: Union[str, int], params: LinkCreateRequest) -> LinkDetails:
         """Create a payment link. ``POST /eshops/{goid}/links``
 
@@ -479,7 +509,7 @@ class GoPayClient:
         path = f"/eshops/{_goid(goid)}/links"
         return cast(LinkDetails, self._transport.request("POST", path, body=params))
 
-    @_reported
+    @_public
     def get_payment_link(self, goid: Union[str, int], link_id: str) -> LinkDetails:
         """Return a payment link. ``GET /eshops/{goid}/links/{link_id}``
 
@@ -490,7 +520,7 @@ class GoPayClient:
         path = f"/eshops/{_goid(goid)}/links/{lid}"
         return cast(LinkDetails, self._transport.request("GET", path))
 
-    @_reported
+    @_public
     def disable_payment_link(self, goid: Union[str, int], link_id: str) -> None:
         """Disable a payment link so it starts no further payments.
         ``DELETE /eshops/{goid}/links/{link_id}``
@@ -504,7 +534,7 @@ class GoPayClient:
 
     # --------------------------------------------------------------- recurrences
 
-    @_reported
+    @_public
     def create_recurrence(
         self, goid: Union[str, int], params: RecurrenceCreateRequest
     ) -> RecurrenceDetails:
@@ -517,13 +547,13 @@ class GoPayClient:
         path = f"/eshops/{_goid(goid)}/recurrences"
         return cast(RecurrenceDetails, self._transport.request("POST", path, body=params))
 
-    @_reported
+    @_public
     def get_recurrence(self, rec_id: str) -> RecurrenceDetails:
         """Return a recurrence and the payment it carries. ``GET /recurrences/{rec_id}``"""
         rid = require_path_segment(rec_id, "rec_id")
         return cast(RecurrenceDetails, self._transport.request("GET", f"/recurrences/{rid}"))
 
-    @_reported
+    @_public
     def start_recurrence(
         self, rec_id: str, override: Optional[PaymentInstanceOverride] = None
     ) -> RecurrencePaymentDetails:
@@ -541,7 +571,7 @@ class GoPayClient:
         path = f"/recurrences/{rid}/start"
         return cast(RecurrencePaymentDetails, self._transport.request("POST", path, body=override))
 
-    @_reported
+    @_public
     def create_next_payment(
         self, rec_id: str, override: Optional[PaymentInstanceOverride] = None
     ) -> RecurrencePaymentDetails:
@@ -554,7 +584,7 @@ class GoPayClient:
         path = f"/recurrences/{rid}/next"
         return cast(RecurrencePaymentDetails, self._transport.request("POST", path, body=override))
 
-    @_reported
+    @_public
     def stop_recurrence(self, rec_id: str) -> None:
         """Stop a recurrence so it creates no further payments. ``DELETE /recurrences/{rec_id}``
 
@@ -565,7 +595,7 @@ class GoPayClient:
         rid = require_path_segment(rec_id, "rec_id")
         self._transport.delete(f"/recurrences/{rid}")
 
-    @_reported
+    @_public
     def await_recurrence_state(
         self,
         rec_id: str,
