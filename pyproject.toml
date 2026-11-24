@@ -1,5 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.25", "hatch-vcs>=0.4"]
+# 1.26: the first hatchling that reads license-files as a list (PEP 639). 1.25 refuses it.
+requires = ["hatchling>=1.26", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]

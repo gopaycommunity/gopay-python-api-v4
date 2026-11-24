@@ -40,6 +40,24 @@ definitions:
           - pip install --quiet "uv==0.12.23"
           - uv run --frozen --python-preference only-system --python 3.15 pytest -q -p no:cacheprovider
 
+    - step: &wheel
+        name: Built wheel on the floor versions
+        caches:
+          - uv
+        script:
+          - pip install --quiet "uv==0.12.23"
+          # What PyPI gets, on what pyproject.toml promises: the unit suite against the built
+          # wheel, on the 3.9 floor with the lowest versions of every dependency the package
+          # allows (the webhooks extra's included). --no-project keeps the source tree out:
+          # with the src layout, the wheel is the only gopay_payments there is to import.
+          - uv build --wheel --out-dir dist
+          - >-
+            uv run --isolated --no-project --python 3.9
+            --with "$(ls dist/*.whl)[webhooks]"
+            --with "httpx==0.27.0" --with "typing_extensions==4.7.0" --with "cryptography==42.0.0"
+            --with pytest
+            python -m pytest -q -p no:cacheprovider tests/unit
+
     - step: &e2e
         name: E2E
         # Self-hosted, inside GoPay's network, like the PHP SDK's E2E step: the gateway the
@@ -63,8 +81,9 @@ definitions:
           - uv
         script:
           - pip install --quiet "uv==0.12.23"
-          # Runtime dependencies only: they are what ships to merchants.
-          - uv export --frozen --no-dev --no-emit-project --format requirements-txt -o runtime-requirements.txt
+          # Runtime dependencies only, the webhooks extra's included: they are what ships to
+          # merchants.
+          - uv export --frozen --no-dev --all-extras --no-emit-project --format requirements-txt -o runtime-requirements.txt
           - uvx --from "pip-audit>=2.7" pip-audit --strict -r runtime-requirements.txt
 
     - step: &sonar
@@ -150,6 +169,7 @@ pipelines:
           - step: *lint
           - step: *test
           - step: *test-315
+          - step: *wheel
           - step: *e2e
           - step: *audit
       - step: *sonar
@@ -161,6 +181,7 @@ pipelines:
           - step: *lint
           - step: *test
           - step: *test-315
+          - step: *wheel
           - step: *e2e
           - step: *audit
       - step: *sonar
