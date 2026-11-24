@@ -297,8 +297,9 @@ def test_after_a_429_mid_paging_the_caller_resumes_from_the_last_event(
         page(ev(3)),
     )
     seen: list[str] = []
+    events = client.iter_events("8123456789")
     with pytest.raises(GoPayHTTPError) as caught:
-        collect(client.iter_events("8123456789"), seen)
+        collect(events, seen)
     assert caught.value.retry_after == 60.0
     # The README's recipe: wait, then continue after the last event received.
     resumed = client.iter_events("8123456789", {"prev_item": seen[-1]})
