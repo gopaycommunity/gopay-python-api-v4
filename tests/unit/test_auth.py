@@ -212,17 +212,6 @@ def test_a_401_on_a_post_resends_the_same_body(client: GoPayClient, gateway: Fak
     assert second.headers["authorization"] == "Bearer token-2"
 
 
-def test_a_401_retry_keeps_the_extra_headers(client: GoPayClient, gateway: FakeGateway) -> None:
-    path = "/payments/1/apple-pay/validate"
-    gateway.on("POST", path, reply(401), reply(200, {"merchantSessionIdentifier": "s-1"}))
-    client.validate_apple_pay_merchant(
-        "1", {"validationUrl": "https://apple.example/v"}, origin="https://shop.example"
-    )
-    first, second = gateway.api_requests()
-    assert first.headers["origin"] == second.headers["origin"] == "https://shop.example"
-    assert first.content == second.content == b'{"validationUrl": "https://apple.example/v"}'
-
-
 def test_a_second_401_raises_but_keeps_the_credentials(
     client: GoPayClient, gateway: FakeGateway, errors: ErrorLog
 ) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from .errors import ErrorCode, GoPaySDKError
 
@@ -32,36 +32,6 @@ def require_path_segment(value: Any, field: str) -> str:
             error_code=ErrorCode.INVALID_ARGUMENT,
         )
     return quote(validated, safe="")
-
-
-def require_https_origin(origin: Any, field: str) -> str:
-    """Return ``origin`` if it is a bare ``https://host[:port]`` origin."""
-    if not isinstance(origin, str):
-        raise GoPaySDKError(
-            f"[GoPaySDK] {field} must be a string", error_code=ErrorCode.INVALID_ARGUMENT
-        )
-    # Checked on the raw string: urlsplit silently drops tabs and line breaks, so a value
-    # carrying them would otherwise pass and fail later as a header error.
-    if not _HEADER_SAFE.fullmatch(origin):
-        raise GoPaySDKError(
-            f"[GoPaySDK] {field} must contain printable ASCII only",
-            error_code=ErrorCode.INVALID_ARGUMENT,
-        )
-    parts = urlsplit(origin)
-    if (
-        parts.scheme != "https"
-        or not parts.netloc
-        or parts.path
-        or parts.query
-        or parts.fragment
-        or "@" in parts.netloc
-    ):
-        raise GoPaySDKError(
-            f'[GoPaySDK] {field} must be an https origin such as "https://shop.example". '
-            f'Got "{origin}"',
-            error_code=ErrorCode.INVALID_ARGUMENT,
-        )
-    return origin
 
 
 # Printable ASCII: what an HTTP header value can carry without httpx refusing to encode it.

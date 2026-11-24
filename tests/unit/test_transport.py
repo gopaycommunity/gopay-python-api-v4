@@ -253,27 +253,6 @@ def test_a_delete_ignores_whatever_body_it_gets(client: GoPayClient, gateway: Fa
     assert client.stop_recurrence("rec-1") is None
 
 
-def test_extra_headers_cannot_replace_reserved_ones(
-    client: GoPayClient, gateway: FakeGateway
-) -> None:
-    gateway.on(
-        "POST", "/payments/1/apple-pay/validate", reply(200, {"merchantSessionIdentifier": "x"})
-    )
-    client._transport.request(
-        "POST",
-        "/payments/1/apple-pay/validate",
-        headers={
-            "Origin": "https://shop.example",
-            "Authorization": "Bearer stolen",
-            "user-agent": "x",
-        },
-    )
-    request = gateway.last()
-    assert request.headers["origin"] == "https://shop.example"
-    assert request.headers["authorization"] == "Bearer token-1"
-    assert request.headers["user-agent"].startswith("GoPay Python v4 ")
-
-
 def test_on_error_failure_does_not_replace_the_sdk_error(
     make_client: Callable[..., GoPayClient], gateway: FakeGateway, caplog: pytest.LogCaptureFixture
 ) -> None:

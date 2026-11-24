@@ -180,9 +180,6 @@ operation yet (see [MIGRATION.md](MIGRATION.md)).
 | `charge_payment(payment_id, params)` | `POST /payments/{payment_id}/charge` |
 | `get_charge_state(payment_id)` | `GET /payments/{payment_id}/charge` |
 | `get_qr_payment_info(payment_id, format=None)` | `GET /payments/{payment_id}/qr-payment/info` |
-| `get_google_pay_info(payment_id)` | `GET /payments/{payment_id}/google-pay/info` |
-| `get_apple_pay_info(payment_id)` | `GET /payments/{payment_id}/apple-pay/info` |
-| `validate_apple_pay_merchant(payment_id, params, origin=...)` | `POST /payments/{payment_id}/apple-pay/validate` |
 | `await_charge_state(payment_id, ...)` | polls the charge until it settles |
 | `await_payment_status(payment_id, ...)` | polls the payment until a terminal state |
 

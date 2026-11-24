@@ -37,9 +37,6 @@ MAX_RETRIES = 2
 RETRY_BASE_DELAY_SECONDS = 0.2
 RETRIED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-# Set by the transport alone. Per-request headers cannot replace them.
-RESERVED_HEADERS = frozenset({"accept", "authorization", "content-type", "user-agent"})
-
 OnError = Callable[[GoPayError], object]
 
 
@@ -257,7 +254,6 @@ class Transport:
         path: str,
         *,
         body: Any = None,
-        headers: Optional[Mapping[str, str]] = None,
         many: bool = False,
     ) -> Any:
         """Send an authenticated API request and return the JSON object it answered with.
@@ -266,12 +262,12 @@ class Transport:
         other 2xx body — empty included — raises ``UNEXPECTED_RESPONSE``: a method typed to
         return ``PaymentDetails`` must not hand its caller ``None``.
         """
-        response = self._exchange(method, path, body=body, headers=headers)
+        response = self._exchange(method, path, body=body)
         return _json_body(response, many=many)
 
     def delete(self, path: str) -> None:
         """Send an authenticated ``DELETE``. The API answers ``204``; there is nothing to return."""
-        self._exchange("DELETE", path, body=None, headers=None)
+        self._exchange("DELETE", path, body=None)
 
     def _exchange(
         self,
@@ -279,14 +275,11 @@ class Transport:
         path: str,
         *,
         body: Any,
-        headers: Optional[Mapping[str, str]],
     ) -> httpx.Response:
         content = _encode(body)
 
         token = self._bearer()
-        response = self._send(
-            method, path, headers=self._headers(method, token, headers), content=content
-        )
+        response = self._send(method, path, headers=self._headers(method, token), content=content)
 
         if response.status_code == 401:
             self._discard(token)
@@ -294,7 +287,7 @@ class Transport:
             response = self._send(
                 method,
                 path,
-                headers=self._headers(method, token, headers),
+                headers=self._headers(method, token),
                 content=content,
                 retry=False,
             )
@@ -317,13 +310,12 @@ class Transport:
             )
         return response
 
-    def _headers(
-        self, method: str, token: str, extra: Optional[Mapping[str, str]]
-    ) -> dict[str, str]:
-        headers = {k: v for k, v in (extra or {}).items() if k.lower() not in RESERVED_HEADERS}
-        headers["Accept"] = ACCEPT
-        headers["User-Agent"] = self.user_agent
-        headers["Authorization"] = f"Bearer {token}"
+    def _headers(self, method: str, token: str) -> dict[str, str]:
+        headers = {
+            "Accept": ACCEPT,
+            "User-Agent": self.user_agent,
+            "Authorization": f"Bearer {token}",
+        }
         if method in ("POST", "PUT"):
             # Also on a POST without a body: the gateway answers 415 to a POST that does
             # not declare a content type, even when the endpoint takes no body at all.

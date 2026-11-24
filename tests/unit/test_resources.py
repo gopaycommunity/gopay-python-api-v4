@@ -50,7 +50,6 @@ RECURRENCE: RecurrenceCreateRequest = {
     "payment": PAYMENT,
 }
 GOID = "8123456789"
-VALIDATION = {"validationUrl": "https://apple.example/v"}
 
 Call = Callable[[GoPayClient], Any]
 
@@ -80,27 +79,6 @@ CASES: list[tuple[str, Call, str, str, Any]] = [
         CHARGE,
     ),
     ("get_charge_state", lambda c: c.get_charge_state("42"), "GET", "/payments/42/charge", None),
-    (
-        "get_google_pay_info",
-        lambda c: c.get_google_pay_info("42"),
-        "GET",
-        "/payments/42/google-pay/info",
-        None,
-    ),
-    (
-        "get_apple_pay_info",
-        lambda c: c.get_apple_pay_info("42"),
-        "GET",
-        "/payments/42/apple-pay/info",
-        None,
-    ),
-    (
-        "validate_apple_pay_merchant",
-        lambda c: c.validate_apple_pay_merchant("42", {"validationUrl": "https://apple.example/v"}),
-        "POST",
-        "/payments/42/apple-pay/validate",
-        VALIDATION,
-    ),
     (
         "get_qr_payment_info",
         lambda c: c.get_qr_payment_info("42"),
@@ -199,34 +177,6 @@ def test_endpoint(
     assert (request.method, path_of(request)) == (method, path)
     assert json_of(request) == body
     assert result == (None if method == "DELETE" else answer)
-
-
-def test_apple_pay_validation_sends_the_origin(client: GoPayClient, gateway: FakeGateway) -> None:
-    gateway.on("POST", "/payments/42/apple-pay/validate", reply(200, {}))
-    client.validate_apple_pay_merchant(
-        "42", {"validationUrl": "https://apple.example/v"}, origin="https://shop.example"
-    )
-    assert gateway.last().headers["origin"] == "https://shop.example"
-
-
-@pytest.mark.parametrize(
-    "origin",
-    [
-        "http://shop.example",
-        "https://shop.example/checkout",
-        "shop.example",
-        "https://u@shop.example",
-        "https://shop.example\r\nX-Injected: 1",
-        "https://obchod.cz\u00e9",
-    ],
-)
-def test_apple_pay_origin_must_be_a_bare_https_origin(
-    client: GoPayClient, gateway: FakeGateway, origin: str
-) -> None:
-    with pytest.raises(GoPaySDKError) as caught:
-        client.validate_apple_pay_merchant("42", origin=origin)
-    assert caught.value.error_code is ErrorCode.INVALID_ARGUMENT
-    assert gateway.api_requests() == []
 
 
 def test_qr_format_is_validated(

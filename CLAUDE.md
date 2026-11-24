@@ -80,8 +80,7 @@ diff is a real spec change.
 Why `TypedDict` and not pydantic: zero runtime cost, nothing to keep compatible across
 pydantic majors, and pydantic 2.14 already dropped Python 3.9. The generator no longer targets
 3.9 either, so it targets 3.10 without the `|` operator and takes `NotRequired`, `TypeAlias`
-and friends from `typing_extensions`. The inline Google/Apple Pay info responses have no
-schema of their own, so those methods return `dict[str, Any]`.
+and friends from `typing_extensions`.
 
 ### This file is the only place the internal hostname belongs
 

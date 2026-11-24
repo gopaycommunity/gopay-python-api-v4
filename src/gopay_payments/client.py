@@ -29,12 +29,10 @@ from ._generated import (
     RefundCreateRequest,
     RefundDetails,
     TokenCreateRequest,
-    ValidateMerchantRequest,
 )
 from ._transport import OnError, Transport, report
 from ._validate import (
     require_header_value,
-    require_https_origin,
     require_non_empty_string,
     require_path_segment,
 )
@@ -47,9 +45,6 @@ __all__ = ["BrowserKeys", "GoPayClient"]
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
-# A response body the spec gives no schema of its own (the wallet info endpoints).
-JsonObject = dict[str, Any]
 
 # AUTHORIZED is final for this poller: a pre-authorized payment waits for the merchant to
 # capture it, which no amount of polling brings about.
@@ -292,44 +287,6 @@ class GoPayClient:
         pid = require_path_segment(payment_id, "payment_id")
         path = f"/payments/{pid}/charge"
         return cast(PaymentChargeStatusResponse, self._transport.request("GET", path))
-
-    @_reported
-    def get_google_pay_info(self, payment_id: str) -> JsonObject:
-        """Return the Google Pay configuration for a payment.
-        ``GET /payments/{payment_id}/google-pay/info``"""
-        pid = require_path_segment(payment_id, "payment_id")
-        path = f"/payments/{pid}/google-pay/info"
-        return cast(JsonObject, self._transport.request("GET", path))
-
-    @_reported
-    def get_apple_pay_info(self, payment_id: str) -> JsonObject:
-        """Return the Apple Pay configuration for a payment.
-        ``GET /payments/{payment_id}/apple-pay/info``"""
-        pid = require_path_segment(payment_id, "payment_id")
-        path = f"/payments/{pid}/apple-pay/info"
-        return cast(JsonObject, self._transport.request("GET", path))
-
-    @_reported
-    def validate_apple_pay_merchant(
-        self,
-        payment_id: str,
-        params: Optional[ValidateMerchantRequest] = None,
-        *,
-        origin: Optional[str] = None,
-    ) -> JsonObject:
-        """Validate the merchant for an Apple Pay session and return the merchant session.
-        ``POST /payments/{payment_id}/apple-pay/validate``
-
-        :param params: ``{"validationUrl": ...}`` from the browser's
-            ``onvalidatemerchant`` event.
-        :param origin: The checkout page's origin (``https://shop.example``). It has to be
-            registered for the eshop; an unregistered origin is answered with ``403``.
-        """
-        pid = require_path_segment(payment_id, "payment_id")
-        headers = None if origin is None else {"Origin": require_https_origin(origin, "origin")}
-        path = f"/payments/{pid}/apple-pay/validate"
-        result = self._transport.request("POST", path, body=params, headers=headers)
-        return cast(JsonObject, result)
 
     @_reported
     def get_qr_payment_info(

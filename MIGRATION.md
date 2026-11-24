@@ -103,5 +103,5 @@ QR and bank-transfer payments are not charged: show `get_qr_payment_info()` and 
 | `get_embedjs_url()` | not in v4 — the browser SDK replaces the embedded gateway |
 
 New in v4, with no v3 counterpart: `cancel_payment`, `charge_payment`, `get_charge_state`,
-the Google Pay / Apple Pay helpers, payment links, `tokenize_encrypted_card`, and the
+payment links, `tokenize_encrypted_card`, and the
 `await_*` pollers.
