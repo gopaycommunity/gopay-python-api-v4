@@ -1,5 +1,11 @@
 # gopay-payments-v4
 
+[![PyPI Version](https://img.shields.io/pypi/v/gopay-payments-v4)](https://pypi.org/project/gopay-payments-v4/)
+[![Python Version](https://img.shields.io/pypi/pyversions/gopay-payments-v4)](https://pypi.org/project/gopay-payments-v4/)
+[![License](https://img.shields.io/pypi/l/gopay-payments-v4)](https://github.com/gopaycommunity/gopay-python-api-v4/blob/master/LICENSE)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=gp-gopay_gopay-python-api-v4&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=gp-gopay_gopay-python-api-v4)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=gp-gopay_gopay-python-api-v4&metric=coverage)](https://sonarcloud.io/summary/new_code?id=gp-gopay_gopay-python-api-v4)
+
 Python server-side SDK for the [GoPay Payments API v4](https://api-docs.gopay.com/).
 
 Your server creates the payment and confirms its outcome; GoPay's client SDK — the
