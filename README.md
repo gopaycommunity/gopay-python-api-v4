@@ -240,6 +240,24 @@ Filters: `type` (comma-separated, `"payments.*"` for a namespace), `related_type
 `related_id`, `occurred_after` and `occurred_before` (an aware `datetime`, sent with its
 milliseconds, or an RFC 3339 string), and `max_items`.
 
+When paging stops on an error — a `429` with a long `retry_after`, say — continue after the last
+event you received rather than from the first page:
+
+```python
+last_id = None
+try:
+    for event in client.iter_events(goid, params):
+        handle(event)
+        last_id = event["id"]
+except GoPayHTTPError as error:
+    if error.status != 429:
+        raise
+    time.sleep(error.retry_after or 60)
+    resume = {**params, "prev_item": last_id} if last_id else params
+    for event in client.iter_events(goid, resume):
+        ...
+```
+
 ## Saved cards
 
 Saving cards must be enabled for the eshop. The client SDK's card form returns the card
@@ -438,7 +456,8 @@ reading the payment with `get_payment_status()` over blocking a worker while the
 Every error the SDK raises is a `GoPayError`:
 
 - **`GoPayHTTPError`** — the API answered with a non-2xx status. `status`, `body` (parsed JSON,
-  or text), `method`, and `endpoint` (the path with ids collapsed: `/payments/{id}/charge`).
+  or text), `method`, `endpoint` (the path with ids collapsed: `/payments/{id}/charge`), and
+  `retry_after` — the seconds the response asked you to wait in `Retry-After`, or `None`.
 - **`GoPaySDKError`** — the SDK gave up. `error_code` is an `ErrorCode`:
 
 | `ErrorCode` | |
@@ -479,7 +498,8 @@ ones.
 
 Reads (`GET`) are retried twice on a `5xx`, a `429` or a dropped connection, with a growing,
 randomised pause; a `429` waits as long as its `Retry-After` asks, unless that is more than ten
-seconds, which comes back to you as the `429`. Nothing that changes state is retried: a charge
+seconds, which comes back to you as the `429` with the wait in `retry_after`. Nothing that
+changes state is retried: a charge
 or refund that reached the API must not be sent twice, and a cancel the API already carried out
 would answer a repeat with `409`.
 

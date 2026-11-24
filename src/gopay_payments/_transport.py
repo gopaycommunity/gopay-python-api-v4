@@ -194,7 +194,11 @@ class Transport:
         if not response.is_success:
             raise _correlation.tag(
                 GoPayHTTPError(
-                    response.status_code, _error_body(response), method="POST", endpoint=TOKEN_PATH
+                    response.status_code,
+                    _error_body(response),
+                    method="POST",
+                    endpoint=TOKEN_PATH,
+                    retry_after=_retry_after(response, self._clock()),
                 ),
                 ids,
             )
@@ -385,6 +389,7 @@ class Transport:
                     _error_body(response),
                     method=method,
                     endpoint=normalize_endpoint(path),
+                    retry_after=_retry_after(response, self._clock()),
                 ),
                 ids,
             )

@@ -4,6 +4,7 @@ import datetime
 from collections.abc import Iterable
 from typing import Any, Callable
 
+import httpx
 import pytest
 
 from gopay_payments import (
@@ -283,6 +284,25 @@ def test_a_page_without_items_mid_iteration_is_reported_once(
         next(events)
     assert caught.value.error_code is ErrorCode.UNEXPECTED_RESPONSE
     assert errors.errors == [caught.value]
+
+
+def test_after_a_429_mid_paging_the_caller_resumes_from_the_last_event(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    gateway.on("GET", EVENTS, page(ev(1), ev(2), next_query="prev_item=evt-2"))
+    gateway.on(
+        "GET",
+        f"{EVENTS}?prev_item=evt-2",
+        httpx.Response(429, headers={"retry-after": "60"}, json={"errors": []}),
+        page(ev(3)),
+    )
+    seen: list[str] = []
+    with pytest.raises(GoPayHTTPError) as caught:
+        collect(client.iter_events("8123456789"), seen)
+    assert caught.value.retry_after == 60.0
+    # The README's recipe: wait, then continue after the last event received.
+    resumed = client.iter_events("8123456789", {"prev_item": seen[-1]})
+    assert [e["id"] for e in resumed] == ["evt-3"]
 
 
 def test_a_failed_page_request_is_reported_once_with_its_ids(

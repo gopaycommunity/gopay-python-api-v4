@@ -114,8 +114,8 @@ source.
   `409` to a repeat, so retrying one the API already did turns its success into an error (JS
   does retry DELETE; Python deliberately does not). A timeout is never retried. The backoff
   has jitter; a 429 waits what `Retry-After` asks (seconds or an HTTP date), and one asking
-  for more than 10 s goes to the caller instead of blocking the call. PHP and JS retry
-  neither 429 nor with jitter yet.
+  for more than 10 s goes to the caller as `GoPayHTTPError.retry_after` instead of blocking
+  the call. PHP and JS retry neither 429 nor with jitter yet.
 - **`timeout` is httpx's, per phase** (connect, write, wait, read), not a limit on the whole
   call. Documented as such rather than enforced as a deadline: retries and polling make one
   call several requests anyway.
@@ -149,8 +149,9 @@ source.
   5xx/429 retries and by the resend after a 401; one `X-GoPay-Transaction-Id` per public call,
   set by `_public` unless a transaction is already running. It lives in a module-level
   `ContextVar`, never on the client (threads share a client; a ContextVar created per client
-  would never be freed). An error raised by a request carries its ids; an inner request's
-  ids win (`tag()` keeps the first), and `AUTH_REFRESH_FAILED` copies the token request's.
+  would never be freed). An error raised by a request carries its ids: `tag()` runs only on
+  an error the request itself raised, and `AUTH_REFRESH_FAILED` copies the token request's
+  ids from its cause (`_like`).
   Generators run after their method returned, so `iter_events()` returns `_InTransaction`,
   which runs each step under the call's transaction and reports its errors.
 - **Webhooks** (`_webhooks.py`, parity with PHP 1.7.0 / JS): exactly one detached RS256 JWS,
@@ -158,7 +159,9 @@ source.
   `kid`, refetched after an hour, for an unknown `kid` at most every 10 s, and a failed
   refresh retried after those 10 s. A set with no usable key is a failed fetch
   (`UNEXPECTED_RESPONSE`, as PHP; JS says `NETWORK_ERROR`) and keeps the last set. The lock
-  is held across the fetch so concurrent webhooks share one. `cryptography` is the optional
+  is held across the fetch so concurrent webhooks share one; a known `kid` in a fresh set
+  skips it (`_KeySet` swaps keys and their age as one object), so a refetch a made-up `kid`
+  starts holds up no real webhook. `cryptography` is the optional
   `webhooks` extra, imported lazily; without it `INVALID_CONFIG`.
 - **Event paging** (`iter_events`): only the query of `next_page_url` is followed, sent to
   the configured base URL. Paging ends on a missing/empty cursor and raises

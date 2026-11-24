@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import email.utils
+import pickle
 from typing import Any, Callable, Optional, cast
 
 import httpx
@@ -179,8 +180,48 @@ def test_a_429_asking_for_a_long_wait_goes_to_the_caller(
     with pytest.raises(GoPayHTTPError) as caught:
         client.get_payment_status("1")
     assert caught.value.status == 429
+    assert caught.value.retry_after == 60.0  # the caller learns how long to wait
     assert pauses == []
     assert len(gateway.api_requests()) == 1
+
+
+def test_a_write_answered_429_carries_the_wait_it_asked_for(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    gateway.on("POST", "/payments/1/refunds", too_many("5"))
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.refund_payment("1", {"amount": 1})
+    assert caught.value.retry_after == 5.0
+    assert len(gateway.api_requests()) == 1
+
+
+def test_a_retry_after_date_becomes_seconds_on_the_error(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    now = 1_800_000_000.0
+    client._transport._clock = lambda: now
+    gateway.on("GET", "/payments/1", too_many(email.utils.formatdate(now + 90, usegmt=True)))
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.retry_after == 90.0
+
+
+@pytest.mark.parametrize("response", [too_many(None), too_many("soon"), reply(404, {})])
+def test_an_error_without_a_usable_retry_after_has_none(
+    client: GoPayClient, gateway: FakeGateway, response: httpx.Response
+) -> None:
+    gateway.on("POST", "/payments/1/refunds", response)
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.refund_payment("1", {"amount": 1})
+    assert caught.value.retry_after is None
+
+
+def test_retry_after_survives_pickle(client: GoPayClient, gateway: FakeGateway) -> None:
+    gateway.on("POST", "/payments/1/refunds", too_many("7"))
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.refund_payment("1", {"amount": 1})
+    clone = pickle.loads(pickle.dumps(caught.value))  # noqa: S301 — our own object
+    assert clone.retry_after == 7.0
 
 
 def test_a_429_that_persists_raises_after_the_last_attempt(

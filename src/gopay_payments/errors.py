@@ -104,6 +104,9 @@ class GoPayHTTPError(GoPayError):
     ``body`` is the parsed JSON response, or the raw text when it was not JSON.
     ``endpoint`` is the request path with ids collapsed to ``{id}``
     (``/payments/{id}/charge``) — a stable key for grouping errors in monitoring.
+    ``retry_after`` is the wait in seconds the response asked for in ``Retry-After``, or
+    ``None`` when it named none. A read is retried on its own after a ``429`` asking for 10
+    seconds or less; a longer wait, and every write, comes back to the caller with it.
     """
 
     def __init__(
@@ -113,6 +116,7 @@ class GoPayHTTPError(GoPayError):
         *,
         method: Optional[str] = None,
         endpoint: Optional[str] = None,
+        retry_after: Optional[float] = None,
     ) -> None:
         # The message stays free of the endpoint and the body: callers match on it, and
         # the details belong in fields a tracker can read.
@@ -121,6 +125,7 @@ class GoPayHTTPError(GoPayError):
         self.body = body
         self.method = method
         self.endpoint = endpoint
+        self.retry_after = retry_after
 
     def __reduce__(self) -> tuple[Any, ...]:
         # The default rebuilds an exception from its message alone, which this constructor
