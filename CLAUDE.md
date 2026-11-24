@@ -36,8 +36,11 @@ back into the loop once uv is bumped to a release that has one.
 
 ```
 src/gopay_payments/
-├── client.py        ← GoPayClient: every public method, flat, each wrapped by _reported
+├── client.py        ← GoPayClient: every public method, flat, each wrapped by _public
 ├── _transport.py    ← HTTP: headers, retries, auth, token refresh, error mapping, on_error
+├── _correlation.py  ← X-GoPay-* request ids, the transaction ContextVar, ids on errors
+├── _webhooks.py     ← detached-JWS parsing, RS256 verify, signing-key cache by kid
+├── _events.py       ← GoPayEvent / UnknownEvent, is_known_event, event paging helpers
 ├── _polling.py      ← await_charge / await_state (sync loops, threading.Event cancel)
 ├── token_cache.py   ← TokenCache protocol + InMemoryTokenCache
 ├── environment.py   ← Environment, base URLs, base_url validation
@@ -137,8 +140,31 @@ source.
   answers 415 otherwise (`start_recurrence()` / `create_next_payment()` without overrides).
 - **Path segments** are percent-encoded with `quote(..., safe="")` and `.`/`..` are refused —
   byte-identical to PHP `rawurlencode` and the JS SDK.
-- **Errors reach `on_error` exactly once**, via the `_reported` decorator on every public
+- **Errors reach `on_error` exactly once**, via the `_public` decorator on every public
   method plus construction errors in `GoPayClient.__init__`. Validation errors count.
+  `WEBHOOK_INVALID` and `WEBHOOK_KEYS_UNAVAILABLE` never do (`NEVER_REPORTED` in
+  `_transport.py`): anyone who can reach a webhook endpoint can cause them. A failed key fetch
+  is reported where it happens, once per attempt.
+- **Request ids** (`_correlation.py`): one `X-GoPay-Trace-Id` per HTTP request, kept by its
+  5xx/429 retries and by the resend after a 401; one `X-GoPay-Transaction-Id` per public call,
+  set by `_public` unless a transaction is already running. It lives in a module-level
+  `ContextVar`, never on the client (threads share a client; a ContextVar created per client
+  would never be freed). An error raised by a request carries its ids; an inner request's
+  ids win (`tag()` keeps the first), and `AUTH_REFRESH_FAILED` copies the token request's.
+  Generators run after their method returned, so `iter_events()` returns `_InTransaction`,
+  which runs each step under the call's transaction and reports its errors.
+- **Webhooks** (`_webhooks.py`, parity with PHP 1.7.0 / JS): exactly one detached RS256 JWS,
+  `crit`/`b64` refused, strict unpadded base64url (a trailing newline is refused). Keys by
+  `kid`, refetched after an hour, for an unknown `kid` at most every 10 s, and a failed
+  refresh retried after those 10 s. A set with no usable key is a failed fetch
+  (`UNEXPECTED_RESPONSE`, as PHP; JS says `NETWORK_ERROR`) and keeps the last set. The lock
+  is held across the fetch so concurrent webhooks share one. `cryptography` is the optional
+  `webhooks` extra, imported lazily; without it `INVALID_CONFIG`.
+- **Event paging** (`iter_events`): only the query of `next_page_url` is followed, sent to
+  the configured base URL. Paging ends on a missing/empty cursor and raises
+  `UNEXPECTED_RESPONSE` (PHP's code; JS uses `NETWORK_ERROR`) on a cursor naming a page
+  already fetched or an empty page naming a next one — after yielding that page's events, as
+  JS does. `datetime` filters must be aware and keep their milliseconds.
 - **`await_recurrence_state` refuses to wait forever** with the default terminal states: a
   `NEW` recurrence, or a `REQUESTED` one whose first payment is canceled or timed out, raises.
   Verified live on the sandbox (14.10.2026): such a recurrence cannot be stopped (`409`) until

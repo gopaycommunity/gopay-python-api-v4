@@ -51,16 +51,26 @@ except GoPaySDKError as error:      # timeout, network, validation, …
 
 Methods return the parsed JSON body (a `dict`) directly.
 
-### Payments: create, then charge — or the hosted gateway
+### Payments: your own checkout — or the hosted gateway
 
 In v3 you created a payment and sent the customer to `gw_url`. In v4 you choose per payment:
 
-- **Charge from your own checkout**: create the payment, let the GoPay-hosted card form (or
-  Apple Pay / Google Pay) in the browser produce a token, call `charge_payment()`, and follow
-  it with `await_charge_state()` — which hands you the 3-D Secure redirect. See the README.
+- **Your own checkout**: the server creates the payment and hands its `id` and
+  `payment_secret` to GoPay's client SDK (browser, iOS, Android), which takes the card, a
+  saved card or a wallet and charges the payment, 3-D Secure included. The server then
+  confirms the outcome with `get_charge_state()` and from the webhook (`verify_webhook()`).
+  Charging from the server with `charge_payment()` remains possible when it has to act on the
+  card first. See the README.
 - **The hosted gateway**: the created payment still carries `gw_url`, GoPay's full payment
   gateway with every method the eshop has enabled. It is a supported v4 integration, not a v3
   leftover.
+
+### Notifications become signed webhooks
+
+v3 called `notification_url` with the payment id and left you to read the payment. v4 sends a
+signed webhook carrying an event (`payments.paid`, `refunds.succeeded`, …): check it with
+`verify_webhook()`, then read the current state. The same events can be listed back for 30
+days with `iter_events()`.
 
 QR and bank-transfer payments are not charged: show `get_qr_payment_info()` and wait with
 `await_payment_status()`.
@@ -78,7 +88,7 @@ QR and bank-transfer payments are not charged: show `get_qr_payment_info()` and 
 | | v3 | v4 |
 |---|---|---|
 | Token cache | `AbstractCache` subclass in `services` | any object with `get` / `set` / `delete` (`TokenCache`) |
-| Timeout | `timeout` config, default 3600 s | `timeout=`, default 10 s, per request |
+| Timeout | `timeout` config, default 3600 s | `timeout=`, default 10 s, for each phase of a request |
 | User-Agent | `custom_user_agent` replaces the SDK's | `user_agent_suffix` is appended to `GoPay Python v4 <version>` |
 | Logging | custom logger in `services` | the standard `gopay_payments` logger |
 | Request bodies | the dict you pass may be modified | the dict you pass is left alone |
@@ -103,5 +113,5 @@ QR and bank-transfer payments are not charged: show `get_qr_payment_info()` and 
 | `get_embedjs_url()` | not in v4 — the browser SDK replaces the embedded gateway |
 
 New in v4, with no v3 counterpart: `cancel_payment`, `charge_payment`, `get_charge_state`,
-payment links, `tokenize_encrypted_card`, and the
-`await_*` pollers.
+payment links, `tokenize_encrypted_card`, the `await_*` pollers, `verify_webhook`, the events
+(`list_events`, `get_event`, `iter_events`) and `with_transaction_id`.
