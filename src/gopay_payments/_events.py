@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Optional, Union, get_args
+from typing import Any, Optional, Union, cast, get_args
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 from typing_extensions import Literal, NotRequired, TypedDict, TypeGuard
@@ -171,7 +171,7 @@ def read_page(data: Any) -> EventPage:
         data.pop("next_page_url", None)
     elif next_page_query(following) is None:
         raise unexpected_events()
-    return data  # type: ignore[no-any-return]
+    return cast(EventPage, data)
 
 
 def read_event(data: Any) -> GoPayEvent:

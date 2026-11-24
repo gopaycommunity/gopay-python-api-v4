@@ -96,11 +96,12 @@ def headers_for(ids: RequestIds, path: str) -> dict[str, str]:
 
 
 def tag(error: GoPayError, ids: RequestIds) -> GoPayError:
-    """Record on ``error`` the request it came from, unless it already names one.
+    """Record on ``error`` the request it came from.
 
-    An error raised by an inner request — the token refresh — keeps that request's ids.
+    Called only on an error the request itself raised. One that stands in for an inner
+    request's failure — ``AUTH_REFRESH_FAILED`` for the token request — takes that request's
+    ids from its cause instead (``_transport._like``).
     """
-    if error.trace_id is None:
-        error.trace_id = ids.trace_id
-        error.transaction_id = ids.transaction_id
+    error.trace_id = ids.trace_id
+    error.transaction_id = ids.transaction_id
     return error
