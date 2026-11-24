@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Callable, cast
+import email.utils
+from typing import Any, Callable, Optional, cast
 
 import httpx
 import pytest
@@ -116,12 +117,101 @@ def test_get_recovers_after_a_dropped_connection(client: GoPayClient, gateway: F
     assert len(gateway.api_requests()) == 2
 
 
-def test_retries_back_off(client: GoPayClient, gateway: FakeGateway) -> None:
+@pytest.mark.parametrize(("draw", "expected"), [(0.0, [0.1, 0.2]), (1.0, [0.2, 0.4])])
+def test_retries_back_off_exponentially_with_jitter(
+    client: GoPayClient, gateway: FakeGateway, draw: float, expected: list[float]
+) -> None:
+    # Half the exponential delay, plus a random part of the other half: clients that failed
+    # together do not all come back at the same moment.
     pauses: list[float] = []
     client._transport._sleep = pauses.append
+    client._transport._random = lambda: draw
     gateway.on("GET", "/payments/1", reply(500), reply(500), reply(200, {"id": 1}))
     client.get_payment_status("1")
-    assert pauses == [0.2, 0.4]
+    assert pauses == pytest.approx(expected)
+
+
+def too_many(retry_after: Optional[str] = None) -> httpx.Response:
+    headers = {} if retry_after is None else {"retry-after": retry_after}
+    return httpx.Response(429, headers=headers, json={"errors": [{"error_code": 429}]})
+
+
+def test_a_429_on_a_read_is_retried_after_the_seconds_it_asks_for(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    pauses: list[float] = []
+    client._transport._sleep = pauses.append
+    gateway.on("GET", "/payments/1", too_many("2"), reply(200, {"id": "1"}))
+    assert client.get_payment_status("1")["id"] == "1"
+    assert pauses == [2.0]
+    assert len(gateway.api_requests()) == 2
+
+
+def test_a_429_may_name_the_moment_to_retry_at(client: GoPayClient, gateway: FakeGateway) -> None:
+    pauses: list[float] = []
+    client._transport._sleep = pauses.append
+    now = 1_800_000_000.0
+    client._transport._clock = lambda: now
+    at = email.utils.formatdate(now + 3, usegmt=True)
+    gateway.on("GET", "/payments/1", too_many(at), reply(200, {"id": "1"}))
+    client.get_payment_status("1")
+    assert pauses == [3.0]
+
+
+@pytest.mark.parametrize("retry_after", [None, "soon", "-1", "1.5"])
+def test_a_429_without_a_usable_retry_after_backs_off(
+    client: GoPayClient, gateway: FakeGateway, retry_after: Optional[str]
+) -> None:
+    pauses: list[float] = []
+    client._transport._sleep = pauses.append
+    client._transport._random = lambda: 1.0
+    gateway.on("GET", "/payments/1", too_many(retry_after), reply(200, {"id": "1"}))
+    client.get_payment_status("1")
+    assert pauses == [0.2]
+
+
+def test_a_429_asking_for_a_long_wait_goes_to_the_caller(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    pauses: list[float] = []
+    client._transport._sleep = pauses.append
+    gateway.on("GET", "/payments/1", too_many("60"))
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.status == 429
+    assert pauses == []
+    assert len(gateway.api_requests()) == 1
+
+
+def test_a_429_that_persists_raises_after_the_last_attempt(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    gateway.on("GET", "/payments/1", too_many("1"))
+    with pytest.raises(GoPayHTTPError) as caught:
+        client.get_payment_status("1")
+    assert caught.value.status == 429
+    assert len(gateway.api_requests()) == 3
+
+
+def test_a_5xx_after_a_429_backs_off_rather_than_waiting_as_asked_before(
+    client: GoPayClient, gateway: FakeGateway
+) -> None:
+    pauses: list[float] = []
+    client._transport._sleep = pauses.append
+    client._transport._random = lambda: 1.0
+    gateway.on("GET", "/payments/1", too_many("5"), reply(503), reply(200, {"id": "1"}))
+    client.get_payment_status("1")
+    assert pauses == [5.0, 0.4]
+
+
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+def test_a_429_on_a_write_is_not_retried(
+    client: GoPayClient, gateway: FakeGateway, method: str
+) -> None:
+    gateway.on(method, "/payments/1/x", too_many("1"))
+    with pytest.raises(GoPayHTTPError):
+        client._transport.request(method, "/payments/1/x", body={} if method == "POST" else None)
+    assert len(gateway.api_requests()) == 1
 
 
 def test_post_is_never_retried(client: GoPayClient, gateway: FakeGateway) -> None:

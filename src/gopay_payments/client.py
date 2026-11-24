@@ -128,7 +128,9 @@ class GoPayClient:
     :param environment: ``"sandbox"`` (default) or ``"production"``.
     :param base_url: Override the API base URL — a mock server in tests, for example.
         Must be HTTPS; plain HTTP is accepted only for localhost in the sandbox.
-    :param timeout: Per-request timeout in seconds.
+    :param timeout: Seconds allowed for each phase of an HTTP request — connecting, sending,
+        waiting for the response, reading it — not for the whole call: a call that retries or
+        polls makes several requests and can take longer.
     :param user_agent_suffix: Appended to the SDK's own ``User-Agent`` (``"MyShop/2.1"``),
         never replacing it.
     :param shareable_key: The eshop's shareable key, returned by :meth:`get_browser_keys`.

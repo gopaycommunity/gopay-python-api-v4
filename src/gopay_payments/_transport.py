@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+import datetime
+import email.utils
 import hashlib
 import json
 import logging
+import random
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -30,14 +34,17 @@ ACCEPT = JSON_CONTENT_TYPE
 # A token this close to expiry is replaced before use rather than sent and rejected.
 REFRESH_MARGIN_SECONDS = 30.0
 
-# Retries are for failures the request itself did not cause — a 5xx or a dropped
-# connection — and only for reads. A POST is never retried: a charge or a refund that
-# reached the API must not be sent twice. Nor is a DELETE: cancel, stop and disable answer
-# 409 to a repeat, so retrying one the API had already carried out would turn its success
-# into an error.
+# Retries are for failures the request itself did not cause — a 5xx, a dropped connection,
+# a 429 — and only for reads. A POST is never retried: a charge or a refund that reached the
+# API must not be sent twice. Nor is a DELETE: cancel, stop and disable answer 409 to a
+# repeat, so retrying one the API had already carried out would turn its success into an
+# error.
 MAX_RETRIES = 2
 RETRY_BASE_DELAY_SECONDS = 0.2
 RETRIED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# A 429 asking for a longer wait is handed to the caller rather than blocking the call.
+MAX_RETRY_AFTER_SECONDS = 10.0
+_SECONDS = re.compile(r"[0-9]+")
 
 OnError = Callable[[GoPayError], object]
 
@@ -103,6 +110,8 @@ class Transport:
         # Indirection so tests can run retries without real delays.
         self._sleep: Callable[[float], None] = time.sleep
         self._clock: Callable[[], float] = time.time
+        # Not for anything secret: it only spreads retries apart.
+        self._random: Callable[[], float] = random.random
 
     # ------------------------------------------------------------------ reporting
 
@@ -397,9 +406,10 @@ class Transport:
         url = self.base_url + path
         attempts = 1 + (MAX_RETRIES if retry and method in RETRIED_METHODS else 0)
         last_error: Optional[Exception] = None
+        retry_after: Optional[float] = None
         for attempt in range(attempts):
             if attempt:
-                self._sleep(RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1))
+                self._sleep(retry_after if retry_after is not None else self._backoff(attempt))
             # The trace id on every line, so a merchant's log points GoPay support at the
             # request — a timeout and a dropped connection included, where no answer came.
             logger.debug("→ %s %s trace_id=%s", method, url, ids.trace_id)
@@ -423,8 +433,16 @@ class Transport:
                 last_error = error
                 continue
             logger.debug("← %s %s trace_id=%s", response.status_code, url, ids.trace_id)
-            if response.status_code < 500 or attempt == attempts - 1:
+            if attempt == attempts - 1:
                 return response
+            if response.status_code == 429:
+                retry_after = _retry_after(response, self._clock())
+                if retry_after is not None and retry_after > MAX_RETRY_AFTER_SECONDS:
+                    return response
+                continue
+            if response.status_code < 500:
+                return response
+            retry_after = None
         raise _correlation.tag(
             GoPaySDKError(
                 f"[GoPaySDK] Network error ({type(last_error).__name__}).",
@@ -432,6 +450,11 @@ class Transport:
             ),
             ids,
         ) from last_error
+
+    def _backoff(self, attempt: int) -> float:
+        """Exponential, with jitter: clients that failed together do not retry together."""
+        ceiling = RETRY_BASE_DELAY_SECONDS * float(2 ** (attempt - 1))
+        return ceiling / 2 + self._random() * ceiling / 2
 
     def close(self) -> None:
         if self._owns_http:
@@ -474,6 +497,23 @@ def _unexpected_response(expected: str) -> GoPaySDKError:
         f"[GoPaySDK] Failed to parse API response as {expected}.",
         error_code=ErrorCode.UNEXPECTED_RESPONSE,
     )
+
+
+def _retry_after(response: httpx.Response, now: float) -> Optional[float]:
+    """The wait ``Retry-After`` asks for in seconds, or ``None`` when there is none to read."""
+    value = response.headers.get("retry-after", "").strip()
+    if not value:
+        return None
+    if _SECONDS.fullmatch(value):
+        return float(value)
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when.tzinfo is None:
+        # RFC 9110 dates are GMT; parsedate_to_datetime leaves "-0000" naive.
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, float(when.timestamp()) - now)
 
 
 def _like(cause: GoPayError, error: GoPayError) -> GoPayError:
