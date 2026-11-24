@@ -11,7 +11,6 @@ an integration that never receives webhooks should not have to install it.
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import re
 import threading
@@ -69,7 +68,7 @@ def _b64url_decode(value: Any) -> Optional[bytes]:
         return None
     try:
         return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-    except (binascii.Error, ValueError):
+    except ValueError:  # binascii.Error is one
         return None
 
 

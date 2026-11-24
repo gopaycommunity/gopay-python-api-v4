@@ -44,7 +44,8 @@ RETRY_BASE_DELAY_SECONDS = 0.2
 RETRIED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # A 429 asking for a longer wait is handed to the caller rather than blocking the call.
 MAX_RETRY_AFTER_SECONDS = 10.0
-_SECONDS = re.compile(r"[0-9]+")
+# ASCII: a bare \d would also take digits of other scripts.
+_SECONDS = re.compile(r"\d+", re.ASCII)
 
 OnError = Callable[[GoPayError], object]
 
@@ -415,43 +416,20 @@ class Transport:
         url = self.base_url + path
         attempts = 1 + (MAX_RETRIES if retry and method in RETRIED_METHODS else 0)
         last_error: Optional[Exception] = None
-        retry_after: Optional[float] = None
+        # What a 429 asked to wait before the next attempt; None backs off as usual.
+        wait: Optional[float] = None
         for attempt in range(attempts):
             if attempt:
-                self._sleep(retry_after if retry_after is not None else self._backoff(attempt))
-                # Spent: a 5xx or a dropped connection after it backs off as usual.
-                retry_after = None
-            # The trace id on every line, so a merchant's log points GoPay support at the
-            # request — a timeout and a dropped connection included, where no answer came.
-            logger.debug("→ %s %s trace_id=%s", method, url, ids.trace_id)
+                self._sleep(wait if wait is not None else self._backoff(attempt))
             try:
-                response = self._http.request(
-                    method, url, headers=headers, content=content, timeout=self._timeout
-                )
-            except httpx.TimeoutException as error:
-                logger.debug("✗ %s %s timed out trace_id=%s", method, url, ids.trace_id)
-                # Not retried: a timed-out request may still be running on the other side.
-                raise _correlation.tag(
-                    GoPaySDKError(
-                        "[GoPaySDK] Request timed out.", error_code=ErrorCode.NETWORK_TIMEOUT
-                    ),
-                    ids,
-                ) from error
+                response = self._attempt(method, url, headers, content, ids)
             except httpx.RequestError as error:
-                logger.debug(
-                    "✗ %s %s %s trace_id=%s", method, url, type(error).__name__, ids.trace_id
-                )
-                last_error = error
+                last_error, wait = error, None
                 continue
-            logger.debug("← %s %s trace_id=%s", response.status_code, url, ids.trace_id)
             if attempt == attempts - 1:
                 return response
-            if response.status_code == 429:
-                retry_after = _retry_after(response, self._clock())
-                if retry_after is not None and retry_after > MAX_RETRY_AFTER_SECONDS:
-                    return response
-                continue
-            if response.status_code < 500:
+            again, wait = self._retry_decision(response)
+            if not again:
                 return response
         raise _correlation.tag(
             GoPaySDKError(
@@ -460,6 +438,46 @@ class Transport:
             ),
             ids,
         ) from last_error
+
+    def _attempt(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        content: Optional[bytes],
+        ids: RequestIds,
+    ) -> httpx.Response:
+        """One HTTP attempt. A timeout raises ``NETWORK_TIMEOUT``; a dropped connection
+        propagates as ``httpx.RequestError`` for the caller to retry."""
+        # The trace id on every line, so a merchant's log points GoPay support at the
+        # request — a timeout and a dropped connection included, where no answer came.
+        logger.debug("→ %s %s trace_id=%s", method, url, ids.trace_id)
+        try:
+            response = self._http.request(
+                method, url, headers=headers, content=content, timeout=self._timeout
+            )
+        except httpx.TimeoutException as error:
+            logger.debug("✗ %s %s timed out trace_id=%s", method, url, ids.trace_id)
+            # Not retried: a timed-out request may still be running on the other side.
+            raise _correlation.tag(
+                GoPaySDKError(
+                    "[GoPaySDK] Request timed out.", error_code=ErrorCode.NETWORK_TIMEOUT
+                ),
+                ids,
+            ) from error
+        except httpx.RequestError as error:
+            logger.debug("✗ %s %s %s trace_id=%s", method, url, type(error).__name__, ids.trace_id)
+            raise
+        logger.debug("← %s %s trace_id=%s", response.status_code, url, ids.trace_id)
+        return response
+
+    def _retry_decision(self, response: httpx.Response) -> tuple[bool, Optional[float]]:
+        """Whether a read is worth another attempt, and the wait a 429 asked for."""
+        if response.status_code == 429:
+            wait = _retry_after(response, self._clock())
+            # A longer wait goes to the caller rather than blocking the call.
+            return wait is None or wait <= MAX_RETRY_AFTER_SECONDS, wait
+        return response.status_code >= 500, None
 
     def _backoff(self, attempt: int) -> float:
         """Exponential, with jitter: clients that failed together do not retry together."""
